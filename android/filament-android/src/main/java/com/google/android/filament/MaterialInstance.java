@@ -557,11 +557,33 @@ public class MaterialInstance {
     }
 
     /**
+     * Overrides the default triangle culling state that was set on the material separately for the
+     * color and shadow passes
+     *
+     * @see
+     * <a href="https://google.github.io/filament/Materials.html#materialdefinitions/materialblock/rasterization:culling">
+     * Rasterization: culling</a>
+     */
+    public void setCullingMode(@NonNull Material.CullingMode colorPassCullingMode,
+                               @NonNull Material.CullingMode shadowPassCullingMode) {
+        nSetCullingModeSeparate(getNativeObject(),
+            colorPassCullingMode.ordinal(), shadowPassCullingMode.ordinal());
+    }
+
+    /**
      * Returns the face culling mode.
      */
     @NonNull
     public Material.CullingMode getCullingMode() {
         return sCullingModeValues[nGetCullingMode(getNativeObject())];
+    }
+
+    /**
+     * Returns the face culling mode for the shadow passes.
+     */
+    @NonNull
+    public Material.CullingMode getShadowCullingMode() {
+        return sCullingModeValues[nGetShadowCullingMode(getNativeObject())];
     }
 
     /**
@@ -626,10 +648,26 @@ public class MaterialInstance {
     }
 
     /**
+     * Sets the depth comparison function (default is {@link TextureSampler.CompareFunction#GE}).
+     *
+     * @param func the depth comparison function
+     */
+    public void setDepthFunc(TextureSampler.CompareFunction func) {
+        nSetDepthFunc(getNativeObject(), func.ordinal());
+    }
+
+    /**
      * Returns whether depth culling is enabled.
      */
     public boolean isDepthCullingEnabled() {
         return nIsDepthCullingEnabled(getNativeObject());
+    }
+
+    /**
+     * Returns the depth comparison function.
+     */
+    public TextureSampler.CompareFunction getDepthFunc() {
+        return TextureSampler.EnumCache.sCompareFunctionValues[nGetDepthFunc(getNativeObject())];
     }
 
     /**
@@ -884,7 +922,7 @@ public class MaterialInstance {
             @IntRange(from = 0) int offset, @IntRange(from = 1) int count);
 
     private static native void nSetParameterTexture(long nativeMaterialInstance,
-            @NonNull String name, long nativeTexture, int sampler);
+            @NonNull String name, long nativeTexture, long sampler);
 
     private static native void nSetScissor(long nativeMaterialInstance,
             @IntRange(from = 0) int left, @IntRange(from = 0) int bottom,
@@ -904,10 +942,13 @@ public class MaterialInstance {
 
     private static native void nSetDoubleSided(long nativeMaterialInstance, boolean doubleSided);
     private static native void nSetCullingMode(long nativeMaterialInstance, long mode);
+    private static native void nSetCullingModeSeparate(long nativeMaterialInstance,
+            long colorPassCullingMode, long shadowPassCullingMode);
     private static native void nSetColorWrite(long nativeMaterialInstance, boolean enable);
     private static native void nSetDepthWrite(long nativeMaterialInstance, boolean enable);
     private static native void nSetStencilWrite(long nativeMaterialInstance, boolean enable);
     private static native void nSetDepthCulling(long nativeMaterialInstance, boolean enable);
+    private static native void nSetDepthFunc(long nativeMaterialInstance, long function);
 
     private static native void nSetStencilCompareFunction(long nativeMaterialInstance,
             long function, long face);
@@ -935,8 +976,10 @@ public class MaterialInstance {
     private static native float nGetSpecularAntiAliasingThreshold(long nativeMaterialInstance);
     private static native boolean nIsDoubleSided(long nativeMaterialInstance);
     private static native int nGetCullingMode(long nativeMaterialInstance);
+    private static native int nGetShadowCullingMode(long nativeMaterialInstance);
     private static native boolean nIsColorWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsDepthWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsStencilWriteEnabled(long nativeMaterialInstance);
     private static native boolean nIsDepthCullingEnabled(long nativeMaterialInstance);
+    private static native int nGetDepthFunc(long nativeMaterialInstance);
 }

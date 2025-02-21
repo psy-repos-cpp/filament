@@ -58,7 +58,7 @@ BufferInterfaceBlock::Builder& BufferInterfaceBlock::Builder::add(
     for (auto const& item : list) {
         mEntries.push_back({
                 { item.name.data(), item.name.size() },
-                0, uint8_t(item.stride), item.type, item.size > 0, item.size, item.precision,
+                0, uint8_t(item.stride), item.type, item.size > 0, item.size, item.precision, item.minFeatureLevel,
                 { item.structName.data(), item.structName.size() },
                 { item.sizeName.data(), item.sizeName.size() }
         });
@@ -71,7 +71,7 @@ BufferInterfaceBlock::Builder& BufferInterfaceBlock::Builder::addVariableSizedAr
     mHasVariableSizeArray = true;
     mEntries.push_back({
             { item.name.data(), item.name.size() },
-            0, uint8_t(item.stride), item.type, true, 0, item.precision,
+            0, uint8_t(item.stride), item.type, true, 0, item.precision, item.minFeatureLevel,
             { item.structName.data(), item.structName.size() },
             { item.sizeName.data(), item.sizeName.size() }
     });
@@ -86,16 +86,16 @@ BufferInterfaceBlock BufferInterfaceBlock::Builder::build() {
     });
 
     // if there is one, check it's the last entry
-    ASSERT_PRECONDITION(pos == mEntries.end() || pos == mEntries.end() - 1,
-            "the variable-size array must be the last entry");
+    FILAMENT_CHECK_PRECONDITION(pos == mEntries.end() || pos == mEntries.end() - 1)
+            << "the variable-size array must be the last entry";
 
     // if we have a variable size array, we can't be a UBO
-    ASSERT_PRECONDITION(pos == mEntries.end() || mTarget == Target::SSBO,
-            "variable size arrays not supported for UBOs");
+    FILAMENT_CHECK_PRECONDITION(pos == mEntries.end() || mTarget == Target::SSBO)
+            << "variable size arrays not supported for UBOs";
 
     // std430 not available for UBOs
-    ASSERT_PRECONDITION(mAlignment == Alignment::std140 || mTarget == Target::SSBO,
-            "UBOs must use std140");
+    FILAMENT_CHECK_PRECONDITION(mAlignment == Alignment::std140 || mTarget == Target::SSBO)
+            << "UBOs must use std140";
 
     return BufferInterfaceBlock(*this);
 }
@@ -143,7 +143,7 @@ BufferInterfaceBlock::BufferInterfaceBlock(Builder const& builder) noexcept
 
         FieldInfo& info = uniformsInfoList[i];
         info = { e.name, offset, uint8_t(stride), e.type, e.isArray, e.size,
-                 e.precision, e.structName, e.sizeName };
+                 e.precision, e.minFeatureLevel, e.structName, e.sizeName };
 
         // record this uniform info
         infoMap[{ info.name.data(), info.name.size() }] = i;
@@ -166,9 +166,17 @@ ssize_t BufferInterfaceBlock::getFieldOffset(std::string_view name, size_t index
 BufferInterfaceBlock::FieldInfo const* BufferInterfaceBlock::getFieldInfo(
         std::string_view name) const {
     auto pos = mInfoMap.find(name);
-    ASSERT_PRECONDITION(pos != mInfoMap.end(),
-            "uniform named \"%.*s\" not found", name.size(), name.data());
+    FILAMENT_CHECK_PRECONDITION(pos != mInfoMap.end()) << "uniform named \""
+            << name << "\" not found";
     return &mFieldInfoList[pos->second];
+}
+
+bool BufferInterfaceBlock::isEmptyForFeatureLevel(
+        backend::FeatureLevel featureLevel) const noexcept {
+    return std::all_of(mFieldInfoList.begin(), mFieldInfoList.end(),
+                       [featureLevel](auto const &info) {
+                           return featureLevel < info.minFeatureLevel;
+                       });
 }
 
 uint8_t UTILS_NOINLINE BufferInterfaceBlock::baseAlignmentForType(BufferInterfaceBlock::Type type) noexcept {
@@ -230,4 +238,3 @@ uint8_t UTILS_NOINLINE BufferInterfaceBlock::strideForType(BufferInterfaceBlock:
 }
 
 } // namespace filament
-

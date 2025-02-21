@@ -4,6 +4,8 @@ project(gltfio C ASM)
 set(TARGET gltfio)
 set(PUBLIC_HDR_DIR include)
 
+set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
@@ -14,6 +16,7 @@ set(PUBLIC_HDRS
         include/gltfio/FilamentInstance.h
         include/gltfio/MaterialProvider.h
         include/gltfio/NodeManager.h
+        include/gltfio/TrsTransformManager.h
         include/gltfio/ResourceLoader.h
         include/gltfio/TextureProvider.h
         include/gltfio/math.h
@@ -33,18 +36,30 @@ set(SRCS
         src/FilamentAsset.cpp
         src/FilamentInstance.cpp
         src/FNodeManager.h
+        src/FTrsTransformManager.h
         src/GltfEnums.h
         src/Ktx2Provider.cpp
         src/MaterialProvider.cpp
         src/NodeManager.cpp
+        src/TrsTransformManager.cpp
         src/ResourceLoader.cpp
         src/StbProvider.cpp
         src/TangentsJob.cpp
         src/TangentsJob.h
         src/UbershaderProvider.cpp
+        src/Utility.cpp
+        src/Utility.h
         src/Wireframe.cpp
         src/Wireframe.h
         src/downcast.h
+        src/extended/AssetLoaderExtended.cpp
+        src/extended/AssetLoaderExtended.h
+        src/extended/ResourceLoaderExtended.cpp
+        src/extended/ResourceLoaderExtended.h
+        src/extended/TangentsJobExtended.cpp
+        src/extended/TangentsJobExtended.h
+        src/extended/TangentSpaceMeshWrapper.cpp
+        src/extended/TangentSpaceMeshWrapper.h
 )
 
 # ==================================================================================================
@@ -62,6 +77,13 @@ set(TRANSPARENCY default)
 
 set(UBERZ_OUTPUT_PATH "${RESOURCE_DIR}/default.uberz")
 
+set (MATC_FLAGS ${MATC_BASE_FLAGS})
+if (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "instanced")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=instanced)
+elseif (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "multiview")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=multiview)
+endif ()
+
 function(build_ubershader NAME SRC SHADINGMODEL BLENDING)
     set(DEST "${RESOURCE_DIR}/${NAME}")
     configure_file(materials/${SRC}.mat.in "${DEST}.mat" COPYONLY)
@@ -78,7 +100,7 @@ function(build_ubershader NAME SRC SHADINGMODEL BLENDING)
 
     add_custom_command(
         OUTPUT "${NAME}.filamat"
-        COMMAND matc ${MATC_BASE_FLAGS} ${TEMPLATE_ARGS} -o "${NAME}.filamat" "${NAME}.mat"
+        COMMAND matc ${MATC_FLAGS} ${TEMPLATE_ARGS} -o "${NAME}.filamat" "${NAME}.mat"
         DEPENDS matc "${DEST}.mat"
         WORKING_DIRECTORY ${RESOURCE_DIR}
         COMMENT "Compiling material ${NAME}")
@@ -118,9 +140,16 @@ build_ubershader(specularGlossiness_masked base            specularGlossiness ma
 build_ubershader(unlit_fade                base            unlit fade)
 build_ubershader(unlit_opaque              base            unlit opaque)
 build_ubershader(unlit_masked              base            unlit masked)
-build_ubershader(volume                    volume          _ _)
-build_ubershader(transmission              transmission    _ _)
+build_ubershader(transmission_opaque       transmission    lit opaque)
+build_ubershader(transmission_fade         transmission    lit fade)
+build_ubershader(transmission_masked       transmission    lit masked)
+build_ubershader(volume_opaque             volume          lit opaque)
+build_ubershader(volume_fade               volume          lit fade)
+build_ubershader(volume_masked             volume          lit masked)
 build_ubershader(sheen                     sheen           _ _)
+build_ubershader(specular_opaque           specular        lit opaque)
+build_ubershader(specular_fade             specular        lit fade)
+build_ubershader(specular_masked           specular        lit masked)
 
 add_custom_target(uberz_file DEPENDS ${UBERZ_OUTPUT_PATH})
 set_target_properties(uberz_file PROPERTIES FOLDER Libs)
@@ -153,7 +182,7 @@ set_target_properties(uberarchive PROPERTIES FOLDER Libs)
 # ==================================================================================================
 
 include_directories(${PUBLIC_HDR_DIR} ${RESOURCE_DIR})
-link_libraries(math utils filament cgltf stb ktxreader geometry tsl trie uberzlib)
+link_libraries(math utils filament cgltf stb ktxreader geometry tsl uberzlib)
 
 add_library(gltfio_core STATIC ${PUBLIC_HDRS} ${SRCS})
 
@@ -167,6 +196,16 @@ if (WEBGL_PTHREADS)
     target_compile_definitions(gltfio_core PUBLIC -DFILAMENT_WASM_THREADS)
 endif()
 
+set(GLTFIO_WARNINGS -Wall -Werror)
+if (CMAKE_CXX_STANDARD EQUAL 20)
+    # The following things used by AssetLoader.cpp are deprecated in c++20:
+    # wstring_convert and std::codecvt_utf8<char32_t>.
+    list(APPEND GLTFIO_WARNINGS -Wno-deprecated-declarations)
+endif()
+if (NOT MSVC)
+    target_compile_options(gltfio_core PRIVATE ${GLTFIO_WARNINGS})
+endif()
+
 if (NOT WEBGL AND NOT ANDROID AND NOT IOS)
 
     # ==================================================================================================
@@ -176,19 +215,49 @@ if (NOT WEBGL AND NOT ANDROID AND NOT IOS)
     target_link_libraries(${TARGET} PUBLIC filamat gltfio_core)
     target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
     set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
-
-    # ==================================================================================================
-    # Compiler flags
-    # ==================================================================================================
-    if (MSVC)
-        target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:/fp:fast>)
-    else()
-        target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:-ffast-math>)
+    if (NOT MSVC)
         target_compile_options(${TARGET} PRIVATE -Wno-deprecated-register)
     endif()
 
     install(TARGETS ${TARGET} ARCHIVE DESTINATION lib/${DIST_DIR})
 
+endif()
+
+# ==================================================================================================
+# Tests
+# ==================================================================================================
+
+set(GLTF_TEST_FILES)
+function(add_test_gltf SOURCE TARGET)
+    set(source_path "${ROOT_DIR}/${SOURCE}")
+    set(target_path "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}")
+    add_custom_command(
+        OUTPUT ${target_path}
+        DEPENDS ${source_path}
+        COMMAND ${CMAKE_COMMAND} -E copy ${source_path} ${target_path}
+    )
+    list(APPEND GLTF_TEST_FILES "${target_path}")
+    set(GLTF_TEST_FILES ${GLTF_TEST_FILES} PARENT_SCOPE)
+endfunction()
+
+add_test_gltf("third_party/models/AnimatedMorphCube/AnimatedMorphCube.glb" "AnimatedMorphCube.glb")
+
+add_custom_target(test_gltfio_files DEPENDS ${GLTF_TEST_FILES})
+
+# The following tests rely on private APIs that are stripped
+# away in Release builds
+if (TNT_DEV AND NOT WEBGL AND NOT ANDROID AND NOT IOS)
+    set(TEST_TARGET test_gltfio)
+
+    add_executable(${TEST_TARGET} test/gltfio_test.cpp)
+    add_dependencies(${TEST_TARGET} test_gltfio_files)
+    set_property(TARGET test_gltfio PROPERTY LINK_LIBRARIES)
+
+    target_link_libraries(${TEST_TARGET} PRIVATE ${TARGET} gtest uberarchive)
+    if (NOT MSVC)
+        target_compile_options(${TEST_TARGET} PRIVATE ${GLTFIO_WARNINGS})
+    endif()
+    set_target_properties(${TEST_TARGET} PROPERTIES FOLDER Tests)
 endif()
 
 # ==================================================================================================

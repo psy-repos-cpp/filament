@@ -1,9 +1,7 @@
 ShadingModel=lit
 
-# Even though the transmission material actually has its
-# blend mode set to "masked", we want the glTF loader to
-# think that it is "opaque".
-BlendingMode=opaque
+# Required Aspects
+BlendingMode = ${BLENDING}
 
 Sheen=unsupported
 Volume=unsupported
@@ -16,6 +14,11 @@ OcclusionTexture=optional
 EmissiveTexture=optional
 MetallicRoughnessTexture=optional
 TextureTransforms=optional
+
+# KHR_materials_specular Features
+Specular=optional
+SpecularTexture=optional
+SpecularColorTexture=optional
 
 Transmission=optional
 Ior=optional
