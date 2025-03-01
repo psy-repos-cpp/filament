@@ -23,6 +23,7 @@
 
 #include "details/Engine.h"
 #include "details/IndirectLight.h"
+#include "details/InstanceBuffer.h"
 #include "details/Skybox.h"
 
 #include "BufferPoolAllocator.h"
@@ -31,6 +32,8 @@
 #include <utils/EntityManager.h>
 #include <utils/Range.h>
 #include <utils/Systrace.h>
+
+#include <math/quat.h>
 
 #include <algorithm>
 
@@ -49,78 +52,138 @@ FScene::FScene(FEngine& engine) :
 FScene::~FScene() noexcept = default;
 
 
-void FScene::prepare(const mat4& worldOriginTransform, bool shadowReceiversAreCasters) noexcept {
+void FScene::prepare(JobSystem& js,
+        RootArenaScope& rootArenaScope,
+        mat4 const& worldTransform,
+        bool shadowReceiversAreCasters) noexcept {
     // TODO: can we skip this in most cases? Since we rely on indices staying the same,
     //       we could only skip, if nothing changed in the RCM.
 
     SYSTRACE_CALL();
 
+    SYSTRACE_CONTEXT();
+
+    // This will reset the allocator upon exiting
+    ArenaScope<RootArenaScope::Arena> localArenaScope(rootArenaScope.getArena());
+
     FEngine& engine = mEngine;
-    EntityManager& em = engine.getEntityManager();
-    FRenderableManager& rcm = engine.getRenderableManager();
-    FTransformManager& tcm = engine.getTransformManager();
-    FLightManager& lcm = engine.getLightManager();
+    EntityManager const& em = engine.getEntityManager();
+    FRenderableManager const& rcm = engine.getRenderableManager();
+    FTransformManager const& tcm = engine.getTransformManager();
+    FLightManager const& lcm = engine.getLightManager();
     // go through the list of entities, and gather the data of those that are renderables
     auto& sceneData = mRenderableData;
     auto& lightData = mLightData;
     auto const& entities = mEntities;
 
+    using RenderableContainerData = std::pair<RenderableManager::Instance, TransformManager::Instance>;
+    using RenderableInstanceContainer = FixedCapacityVector<RenderableContainerData,
+            STLAllocator< RenderableContainerData, LinearAllocatorArena >, false>;
 
-    // NOTE: we can't know in advance how many entities are renderable or lights because the corresponding
-    // component can be added after the entity is added to the scene.
+    using LightContainerData = std::pair<LightManager::Instance, TransformManager::Instance>;
+    using LightInstanceContainer = FixedCapacityVector<LightContainerData,
+            STLAllocator< LightContainerData, LinearAllocatorArena >, false>;
 
-    size_t renderableDataCapacity = entities.size();
-    // we need the capacity to be multiple of 16 for SIMD loops
-    renderableDataCapacity = (renderableDataCapacity + 0xFu) & ~0xFu;
-    // we need 1 extra entry at the end for the summed primitive count
-    renderableDataCapacity = renderableDataCapacity + 1;
+    RenderableInstanceContainer renderableInstances{
+            RenderableInstanceContainer::with_capacity(entities.size(), localArenaScope.getArena()) };
 
-    sceneData.clear();
-    if (sceneData.capacity() < renderableDataCapacity) {
-        sceneData.setCapacity(renderableDataCapacity);
-    }
+    LightInstanceContainer lightInstances{
+            LightInstanceContainer::with_capacity(entities.size(), localArenaScope.getArena()) };
 
-    // The light data list will always contain at least one entry for the
-    // dominating directional light, even if there are no entities.
-    size_t lightDataCapacity = std::max<size_t>(1, entities.size());
-    // we need the capacity to be multiple of 16 for SIMD loops
-    lightDataCapacity = (lightDataCapacity + 0xFu) & ~0xFu;
-
-    lightData.clear();
-    if (lightData.capacity() < lightDataCapacity) {
-        lightData.setCapacity(lightDataCapacity);
-    }
-    // the first entries are reserved for the directional lights (currently only one)
-    lightData.resize(DIRECTIONAL_LIGHTS_COUNT);
-
+    SYSTRACE_NAME_BEGIN("InstanceLoop");
 
     // find the max intensity directional light index in our local array
     float maxIntensity = 0.0f;
+    std::pair<LightManager::Instance, TransformManager::Instance> directionalLightInstances{};
 
-    for (Entity e : entities) {
-        if (!em.isAlive(e)) {
-            continue;
+    /*
+     * First compute the exact number of renderables and lights in the scene.
+     * Also find the main directional light.
+     */
+
+    for (Entity const e: entities) {
+        if (UTILS_LIKELY(em.isAlive(e))) {
+            auto ti = tcm.getInstance(e);
+            auto li = lcm.getInstance(e);
+            auto ri = rcm.getInstance(e);
+            if (li) {
+                // we handle the directional light here because it'd prevent multithreading below
+                if (UTILS_UNLIKELY(lcm.isDirectionalLight(li))) {
+                    // we don't store the directional lights, because we only have a single one
+                    if (lcm.getIntensity(li) >= maxIntensity) {
+                        maxIntensity = lcm.getIntensity(li);
+                        directionalLightInstances = { li, ti };
+                    }
+                } else {
+                    lightInstances.emplace_back(li, ti);
+                }
+            }
+            if (ri) {
+                renderableInstances.emplace_back(ri, ti);
+            }
         }
+    }
 
-        // getInstance() always returns null if the entity is the Null entity,
-        // so we don't need to check for that, but we need to check it's alive
-        auto ri = rcm.getInstance(e);
-        auto li = lcm.getInstance(e);
-        if (!ri && !li) {
-            continue;
+    SYSTRACE_NAME_END();
+
+    /*
+     * Evaluate the capacity needed for the renderable and light SoAs
+     */
+
+    // we need the capacity to be multiple of 16 for SIMD loops
+    // we need 1 extra entry at the end for the summed primitive count
+    size_t renderableDataCapacity = entities.size();
+    renderableDataCapacity = (renderableDataCapacity + 0xFu) & ~0xFu;
+    renderableDataCapacity = renderableDataCapacity + 1;
+
+    // The light data list will always contain at least one entry for the
+    // dominating directional light, even if there are no entities.
+    // we need the capacity to be multiple of 16 for SIMD loops
+    size_t lightDataCapacity = std::max<size_t>(DIRECTIONAL_LIGHTS_COUNT, entities.size());
+    lightDataCapacity = (lightDataCapacity + 0xFu) & ~0xFu;
+
+    /*
+     * Now resize the SoAs if needed
+     */
+
+    // TODO: the resize below could happen in a job
+
+    if (!sceneData.capacity() || sceneData.size() != renderableInstances.size()) {
+        sceneData.clear();
+        if (sceneData.capacity() < renderableDataCapacity) {
+            sceneData.setCapacity(renderableDataCapacity);
         }
+        assert_invariant(renderableInstances.size() <= sceneData.capacity());
+        sceneData.resize(renderableInstances.size());
+    }
 
-        // get the world transform
-        auto ti = tcm.getInstance(e);
-        // this is where we go from double to float for our transforms
-        const mat4f worldTransform{ worldOriginTransform * tcm.getWorldTransformAccurate(ti) };
-        const bool reversedWindingOrder = det(worldTransform.upperLeft()) < 0;
+    if (lightData.size() != lightInstances.size() + DIRECTIONAL_LIGHTS_COUNT) {
+        lightData.clear();
+        if (lightData.capacity() < lightDataCapacity) {
+            lightData.setCapacity(lightDataCapacity);
+        }
+        assert_invariant(lightInstances.size() + DIRECTIONAL_LIGHTS_COUNT <= lightData.capacity());
+        lightData.resize(lightInstances.size() + DIRECTIONAL_LIGHTS_COUNT);
+    }
 
-        // don't even draw this object if it doesn't have a transform (which shouldn't happen
-        // because one is always created when creating a Renderable component).
-        if (ri && ti) {
+    /*
+     * Fill the SoA with the JobSystem
+     */
+
+    auto renderableWork = [first = renderableInstances.data(), &rcm, &tcm, &worldTransform,
+                 &sceneData, shadowReceiversAreCasters](auto* p, auto c) {
+        SYSTRACE_NAME("renderableWork");
+
+        for (size_t i = 0; i < c; i++) {
+            auto [ri, ti] = p[i];
+
+            // this is where we go from double to float for our transforms
+            const mat4f shaderWorldTransform{
+                    worldTransform * tcm.getWorldTransformAccurate(ti) };
+            const bool reversedWindingOrder = det(shaderWorldTransform.upperLeft()) < 0;
+
             // compute the world AABB so we can perform culling
-            const Box worldAABB = rigidTransform(rcm.getAABB(ri), worldTransform);
+            const Box worldAABB = rigidTransform(rcm.getAABB(ri), shaderWorldTransform);
 
             auto visibility = rcm.getVisibility(ri);
             visibility.reversedWindingOrder = reversedWindingOrder;
@@ -131,81 +194,145 @@ void FScene::prepare(const mat4& worldOriginTransform, bool shadowReceiversAreCa
             // FIXME: We compute and store the local scale because it's needed for glTF but
             //        we need a better way to handle this
             const mat4f& transform = tcm.getTransform(ti);
-            float scale = (length(transform[0].xyz) + length(transform[1].xyz) +
-                    length(transform[2].xyz)) / 3.0f;
+            float const scale = (length(transform[0].xyz) + length(transform[1].xyz) +
+                                 length(transform[2].xyz)) / 3.0f;
 
-            // we know there is enough space in the array
-            sceneData.push_back_unsafe(
-                    ri,                             // RENDERABLE_INSTANCE
-                    worldTransform,                 // WORLD_TRANSFORM
-                    visibility,                     // VISIBILITY_STATE
-                    rcm.getSkinningBufferInfo(ri),  // SKINNING_BUFFER
-                    rcm.getMorphingBufferInfo(ri),  // MORPHING_BUFFER
-                    worldAABB.center,               // WORLD_AABB_CENTER
-                    0,                              // VISIBLE_MASK
-                    rcm.getChannels(ri),            // CHANNELS
-                    rcm.getInstanceCount(ri),       // INSTANCE_COUNT
-                    rcm.getLayerMask(ri),           // LAYERS
-                    worldAABB.halfExtent,           // WORLD_AABB_EXTENT
-                    {},                             // PRIMITIVES
-                    0,                              // SUMMED_PRIMITIVE_COUNT
-                    {},                             // UBO
-                    scale                           // USER_DATA
-            );
+            size_t const index = std::distance(first, p) + i;
+            assert_invariant(index < sceneData.size());
+
+            sceneData.elementAt<RENDERABLE_INSTANCE>(index) = ri;
+            sceneData.elementAt<WORLD_TRANSFORM>(index)     = shaderWorldTransform;
+            sceneData.elementAt<VISIBILITY_STATE>(index)    = visibility;
+            sceneData.elementAt<SKINNING_BUFFER>(index)     = rcm.getSkinningBufferInfo(ri);
+            sceneData.elementAt<MORPHING_BUFFER>(index)     = rcm.getMorphingBufferInfo(ri);
+            sceneData.elementAt<INSTANCES>(index)           = rcm.getInstancesInfo(ri);
+            sceneData.elementAt<WORLD_AABB_CENTER>(index)   = worldAABB.center;
+            sceneData.elementAt<VISIBLE_MASK>(index)        = 0;
+            sceneData.elementAt<CHANNELS>(index)            = rcm.getChannels(ri);
+            sceneData.elementAt<LAYERS>(index)              = rcm.getLayerMask(ri);
+            sceneData.elementAt<WORLD_AABB_EXTENT>(index)   = worldAABB.halfExtent;
+            //sceneData.elementAt<PRIMITIVES>(index)          = {}; // already initialized, Slice<>
+            sceneData.elementAt<SUMMED_PRIMITIVE_COUNT>(index) = 0;
+            //sceneData.elementAt<UBO>(index)                 = {}; // not needed here
+            sceneData.elementAt<USER_DATA>(index)           = scale;
         }
+    };
 
-        if (li) {
-            // find the dominant directional light
-            if (UTILS_UNLIKELY(lcm.isDirectionalLight(li))) {
-                // we don't store the directional lights, because we only have a single one
-                if (lcm.getIntensity(li) >= maxIntensity) {
-                    maxIntensity = lcm.getIntensity(li);
-                    float3 d = lcm.getLocalDirection(li);
-                    // using mat3f::getTransformForNormals handles non-uniform scaling
-                    d = normalize(mat3f::getTransformForNormals(worldTransform.upperLeft()) * d);
-                    lightData.elementAt<FScene::POSITION_RADIUS>(0) =
-                            float4{ 0, 0, 0, std::numeric_limits<float>::infinity() };
-                    lightData.elementAt<FScene::DIRECTION>(0)       = d;
-                    lightData.elementAt<FScene::LIGHT_INSTANCE>(0)  = li;
-                }
-            } else {
-                const float4 p = worldTransform * float4{ lcm.getLocalPosition(li), 1 };
-                float3 d = 0;
-                if (!lcm.isPointLight(li) || lcm.isIESLight(li)) {
-                    d = lcm.getLocalDirection(li);
-                    // using mat3f::getTransformForNormals handles non-uniform scaling
-                    d = normalize(mat3f::getTransformForNormals(worldTransform.upperLeft()) * d);
-                }
-                lightData.push_back_unsafe(
-                        float4{ p.xyz, lcm.getRadius(li) }, d, li, {}, {}, {});
+    auto lightWork = [first = lightInstances.data(), &lcm, &tcm, &worldTransform,
+            &lightData](auto* p, auto c) {
+        SYSTRACE_NAME("lightWork");
+        for (size_t i = 0; i < c; i++) {
+            auto [li, ti] = p[i];
+            // this is where we go from double to float for our transforms
+            mat4f const shaderWorldTransform{
+                    worldTransform * tcm.getWorldTransformAccurate(ti) };
+            float4 const position = shaderWorldTransform * float4{ lcm.getLocalPosition(li), 1 };
+            float3 d = 0;
+            if (!lcm.isPointLight(li) || lcm.isIESLight(li)) {
+                d = lcm.getLocalDirection(li);
+                // using mat3f::getTransformForNormals handles non-uniform scaling
+                d = normalize(mat3f::getTransformForNormals(shaderWorldTransform.upperLeft()) * d);
             }
+            size_t const index = DIRECTIONAL_LIGHTS_COUNT + std::distance(first, p) + i;
+            assert_invariant(index < lightData.size());
+            lightData.elementAt<POSITION_RADIUS>(index) = float4{ position.xyz, lcm.getRadius(li) };
+            lightData.elementAt<DIRECTION>(index) = d;
+            lightData.elementAt<LIGHT_INSTANCE>(index) = li;
         }
+    };
+
+
+    SYSTRACE_NAME_BEGIN("Renderable and Light jobs");
+
+    JobSystem::Job* rootJob = js.createJob();
+
+    auto* renderableJob = parallel_for(js, rootJob,
+            renderableInstances.data(), renderableInstances.size(),
+            std::cref(renderableWork), jobs::CountSplitter<64>());
+
+    auto* lightJob = parallel_for(js, rootJob,
+            lightInstances.data(), lightInstances.size(),
+            std::cref(lightWork), jobs::CountSplitter<32, 5>());
+
+    js.run(renderableJob);
+    js.run(lightJob);
+
+    // Everything below can be done in parallel.
+
+    /*
+     * Handle the directional light separately
+     */
+
+    if (auto [li, ti] = directionalLightInstances ; li) {
+        // in the code below, we only transform directions, so the translation of the
+        // world transform is irrelevant, and we don't need to use getWorldTransformAccurate()
+
+        mat3 const worldDirectionTransform =
+                mat3::getTransformForNormals(tcm.getWorldTransformAccurate(ti).upperLeft());
+        FLightManager::ShadowParams const params = lcm.getShadowParams(li);
+        float3 const localDirection = worldDirectionTransform * lcm.getLocalDirection(li);
+        double3 const shadowLocalDirection = params.options.transform * localDirection;
+
+        // using mat3::getTransformForNormals handles non-uniform scaling
+        // note: in the common case of the rigid-body transform, getTransformForNormals() returns
+        // identity.
+        mat3 const worlTransformNormals = mat3::getTransformForNormals(worldTransform.upperLeft());
+        double3 const d = worlTransformNormals * localDirection;
+        double3 const s = worlTransformNormals * shadowLocalDirection;
+
+        // We compute the reference point for snapping shadowmaps without applying the
+        // rotation of `worldOriginTransform` on both sides, so that we don't have any instability
+        // due to the limited precision of the "light space" matrix (even at double precision).
+
+        // getMv() Returns the world-to-lightspace transformation. See ShadowMap.cpp.
+        auto getMv = [](double3 direction) -> mat3 {
+            // We use the x-axis as the "up" reference so that the math is stable when the light
+            // is pointing down, which is a common case for lights. See ShadowMap.cpp.
+            return transpose(mat3::lookTo(direction, double3{ 1, 0, 0 }));
+        };
+        double3 const worldOrigin = transpose(worldTransform.upperLeft()) * worldTransform[3].xyz;
+        mat3 const Mv = getMv(shadowLocalDirection);
+        double2 const lsReferencePoint = (Mv * worldOrigin).xy;
+
+        constexpr float inf = std::numeric_limits<float>::infinity();
+        lightData.elementAt<POSITION_RADIUS>(0) = float4{ 0, 0, 0, inf };
+        lightData.elementAt<DIRECTION>(0) = normalize(d);
+        lightData.elementAt<SHADOW_DIRECTION>(0) = normalize(s);
+        lightData.elementAt<SHADOW_REF>(0) = lsReferencePoint;
+        lightData.elementAt<LIGHT_INSTANCE>(0) = li;
+    } else {
+        lightData.elementAt<LIGHT_INSTANCE>(0) = 0;
     }
 
     // some elements past the end of the array will be accessed by SIMD code, we need to make
     // sure the data is valid enough as not to produce errors such as divide-by-zero
     // (e.g. in computeLightRanges())
-    for (size_t i = lightData.size(), e = lightDataCapacity; i < e; i++) {
+    for (size_t i = lightData.size(), e = lightData.capacity(); i < e; i++) {
         new(lightData.data<POSITION_RADIUS>() + i) float4{ 0, 0, 0, 1 };
     }
 
     // Purely for the benefit of MSAN, we can avoid uninitialized reads by zeroing out the
     // unused scene elements between the end of the array and the rounded-up count.
     if (UTILS_HAS_SANITIZE_MEMORY) {
-        for (size_t i = sceneData.size(), e = renderableDataCapacity; i < e; i++) {
+        for (size_t i = sceneData.size(), e = sceneData.capacity(); i < e; i++) {
             sceneData.data<LAYERS>()[i] = 0;
             sceneData.data<VISIBLE_MASK>()[i] = 0;
             sceneData.data<VISIBILITY_STATE>()[i] = {};
         }
     }
+
+    js.runAndWait(rootJob);
+
+    SYSTRACE_NAME_END();
 }
 
 void FScene::prepareVisibleRenderables(Range<uint32_t> visibleRenderables) noexcept {
+    SYSTRACE_CALL();
     RenderableSoa& sceneData = mRenderableData;
-    FRenderableManager& rcm = mEngine.getRenderableManager();
+    FRenderableManager const& rcm = mEngine.getRenderableManager();
 
     mHasContactShadows = false;
-    for (uint32_t i : visibleRenderables) {
+    for (uint32_t const i : visibleRenderables) {
         PerRenderableData& uboData = sceneData.elementAt<UBO>(i);
 
         auto const visibility = sceneData.elementAt<VISIBILITY_STATE>(i);
@@ -224,7 +351,7 @@ void FScene::prepareVisibleRenderables(Range<uint32_t> visibleRenderables) noexc
         // Note: if the model matrix is known to be a rigid-transform, we could just use it directly.
 
         mat3f m = mat3f::getTransformForNormals(model.upperLeft());
-        m *= mat3f(1.0f / std::sqrt(max(float3{length2(m[0]), length2(m[1]), length2(m[2])})));
+        m = prescaleForNormals(m);
 
         // The shading normal must be flipped for mirror transformations.
         // Basically we're shading the other side of the polygon and therefore need to negate the
@@ -241,6 +368,7 @@ void FScene::prepareVisibleRenderables(Range<uint32_t> visibleRenderables) noexc
                 visibility.skinning,
                 visibility.morphing,
                 visibility.screenSpaceContactShadows,
+                sceneData.elementAt<INSTANCES>(i).buffer != nullptr,
                 sceneData.elementAt<CHANNELS>(i));
 
         uboData.morphTargetCount = sceneData.elementAt<MORPHING_BUFFER>(i).count;
@@ -257,10 +385,8 @@ void FScene::prepareVisibleRenderables(Range<uint32_t> visibleRenderables) noexc
 void FScene::updateUBOs(
         Range<uint32_t> visibleRenderables,
         Handle<HwBufferObject> renderableUbh) noexcept {
+    SYSTRACE_CALL();
     FEngine::DriverApi& driver = mEngine.getDriverApi();
-
-    // store the UBO handle
-    mRenderableViewUbh = renderableUbh;
 
     // don't allocate more than 16 KiB directly into the render stream
     static constexpr size_t MAX_STREAM_ALLOCATION_COUNT = 64;   // 16 KiB
@@ -276,9 +402,21 @@ void FScene::updateUBOs(
         }
     }();
 
-    // copy our data into the UBO for each visible renderable
     PerRenderableData const* const uboData = mRenderableData.data<UBO>();
-    for (uint32_t i : visibleRenderables) {
+    mat4f const* const worldTransformData = mRenderableData.data<WORLD_TRANSFORM>();
+
+    // prepare each InstanceBuffer.
+    FRenderableManager::InstancesInfo const* instancesData = mRenderableData.data<INSTANCES>();
+    for (uint32_t const i : visibleRenderables) {
+        auto& instancesInfo = instancesData[i];
+        if (UTILS_UNLIKELY(instancesInfo.buffer)) {
+            instancesInfo.buffer->prepare(
+                    mEngine, worldTransformData[i], uboData[i], instancesInfo.handle);
+        }
+    }
+
+    // copy our data into the UBO for each visible renderable
+    for (uint32_t const i : visibleRenderables) {
         buffer[i] = uboData[i];
     }
 
@@ -290,7 +428,7 @@ void FScene::updateUBOs(
     driver.resetBufferObject(renderableUbh);
     driver.updateBufferObjectUnsynchronized(renderableUbh, {
             buffer, count * sizeof(PerRenderableData),
-            +[](void* p, size_t s, void* user) {
+            +[](void* p, size_t const s, void* user) {
                 std::weak_ptr<SharedState>* const weakShared =
                         static_cast<std::weak_ptr<SharedState>*>(user);
                 if (s >= MAX_STREAM_ALLOCATION_COUNT * sizeof(PerRenderableData)) {
@@ -301,23 +439,16 @@ void FScene::updateUBOs(
                 delete weakShared;
             }, weakShared
     }, 0);
-
-    // update skybox
-    if (mSkybox) {
-        mSkybox->commit(driver);
-    }
 }
 
-void FScene::terminate(FEngine& engine) {
-    // DO NOT destroy this UBO, it's owned by the View
-    mRenderableViewUbh.clear();
+void FScene::terminate(FEngine&) {
 }
 
-void FScene::prepareDynamicLights(const CameraInfo& camera, ArenaScope& rootArena,
+void FScene::prepareDynamicLights(const CameraInfo& camera,
         Handle<HwBufferObject> lightUbh) noexcept {
     FEngine::DriverApi& driver = mEngine.getDriverApi();
-    FLightManager& lcm = mEngine.getLightManager();
-    FScene::LightSoa& lightData = getLightData();
+    FLightManager const& lcm = mEngine.getLightManager();
+    LightSoa& lightData = getLightData();
 
     /*
      * Here we copy our lights data into the GPU buffer.
@@ -325,20 +456,20 @@ void FScene::prepareDynamicLights(const CameraInfo& camera, ArenaScope& rootAren
 
     size_t const size = lightData.size();
     // number of point-light/spotlights
-    size_t positionalLightCount = size - DIRECTIONAL_LIGHTS_COUNT;
+    size_t const positionalLightCount = size - DIRECTIONAL_LIGHTS_COUNT;
     assert_invariant(positionalLightCount);
 
-    float4 const* const UTILS_RESTRICT spheres = lightData.data<FScene::POSITION_RADIUS>();
+    float4 const* const UTILS_RESTRICT spheres = lightData.data<POSITION_RADIUS>();
 
     // compute the light ranges (needed when building light trees)
-    float2* const zrange = lightData.data<FScene::SCREEN_SPACE_Z_RANGE>();
+    float2* const zrange = lightData.data<SCREEN_SPACE_Z_RANGE>();
     computeLightRanges(zrange, camera, spheres + DIRECTIONAL_LIGHTS_COUNT, positionalLightCount);
 
     LightsUib* const lp = driver.allocatePod<LightsUib>(positionalLightCount);
 
-    auto const* UTILS_RESTRICT directions       = lightData.data<FScene::DIRECTION>();
-    auto const* UTILS_RESTRICT instances        = lightData.data<FScene::LIGHT_INSTANCE>();
-    auto const* UTILS_RESTRICT shadowInfo       = lightData.data<FScene::SHADOW_INFO>();
+    auto const* UTILS_RESTRICT directions       = lightData.data<DIRECTION>();
+    auto const* UTILS_RESTRICT instances        = lightData.data<LIGHT_INSTANCE>();
+    auto const* UTILS_RESTRICT shadowInfo       = lightData.data<SHADOW_INFO>();
     for (size_t i = DIRECTIONAL_LIGHTS_COUNT, c = size; i < c; ++i) {
         const size_t gpuIndex = i - DIRECTIONAL_LIGHTS_COUNT;
         auto li = instances[i];
@@ -394,35 +525,40 @@ inline void FScene::computeLightRanges(
 }
 
 UTILS_NOINLINE
-void FScene::addEntity(Entity entity) {
+void FScene::addEntity(Entity const entity) {
     mEntities.insert(entity);
 }
 
 UTILS_NOINLINE
-void FScene::addEntities(const Entity* entities, size_t count) {
+void FScene::addEntities(const Entity* entities, size_t const count) {
     mEntities.insert(entities, entities + count);
 }
 
 UTILS_NOINLINE
-void FScene::remove(Entity entity) {
+void FScene::remove(Entity const entity) {
     mEntities.erase(entity);
 }
 
 UTILS_NOINLINE
-void FScene::removeEntities(const Entity* entities, size_t count) {
+void FScene::removeEntities(const Entity* entities, size_t const count) {
     for (size_t i = 0; i < count; ++i, ++entities) {
         remove(*entities);
     }
 }
 
 UTILS_NOINLINE
+void FScene::removeAllEntities() noexcept {
+    mEntities.clear();
+}
+
+UTILS_NOINLINE
 size_t FScene::getRenderableCount() const noexcept {
     FEngine& engine = mEngine;
-    EntityManager& em = engine.getEntityManager();
-    FRenderableManager& rcm = engine.getRenderableManager();
+    EntityManager const& em = engine.getEntityManager();
+    FRenderableManager const& rcm = engine.getRenderableManager();
     size_t count = 0;
     auto const& entities = mEntities;
-    for (Entity e : entities) {
+    for (Entity const e : entities) {
         count += em.isAlive(e) && rcm.getInstance(e) ? 1 : 0;
     }
     return count;
@@ -431,18 +567,18 @@ size_t FScene::getRenderableCount() const noexcept {
 UTILS_NOINLINE
 size_t FScene::getLightCount() const noexcept {
     FEngine& engine = mEngine;
-    EntityManager& em = engine.getEntityManager();
-    FLightManager& lcm = engine.getLightManager();
+    EntityManager const& em = engine.getEntityManager();
+    FLightManager const& lcm = engine.getLightManager();
     size_t count = 0;
     auto const& entities = mEntities;
-    for (Entity e : entities) {
+    for (Entity const e : entities) {
         count += em.isAlive(e) && lcm.getInstance(e) ? 1 : 0;
     }
     return count;
 }
 
 UTILS_NOINLINE
-bool FScene::hasEntity(Entity entity) const noexcept {
+bool FScene::hasEntity(Entity const entity) const noexcept {
     return mEntities.find(entity) != mEntities.end();
 }
 

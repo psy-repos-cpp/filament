@@ -32,6 +32,35 @@
 
 namespace filament {
 
+namespace std140 {
+
+struct alignas(16) vec3 : public std::array<float, 3> {};
+struct alignas(16) vec4 : public std::array<float, 4> {};
+
+struct mat33 : public std::array<vec3, 3> {
+    mat33& operator=(math::mat3f const& rhs) noexcept {
+        for (int i = 0; i < 3; i++) {
+            (*this)[i][0] = rhs[i][0];
+            (*this)[i][1] = rhs[i][1];
+            (*this)[i][2] = rhs[i][2];
+        }
+        return *this;
+    }
+};
+
+struct mat44 : public std::array<vec4, 4> {
+    mat44& operator=(math::mat4f const& rhs) noexcept {
+        for (int i = 0; i < 4; i++) {
+            (*this)[i][0] = rhs[i][0];
+            (*this)[i][1] = rhs[i][1];
+            (*this)[i][2] = rhs[i][2];
+            (*this)[i][3] = rhs[i][3];
+        }
+        return *this;
+    }
+};
+
+} // std140
 /*
  * IMPORTANT NOTE: Respect std140 layout, don't update without updating UibGenerator::get{*}Uib()
  */
@@ -43,16 +72,19 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     // Values that can be accessed in both surface and post-process materials
     // --------------------------------------------------------------------------------------------
 
-    math::mat4f viewFromWorldMatrix;
-    math::mat4f worldFromViewMatrix;
-    math::mat4f clipFromViewMatrix;
-    math::mat4f viewFromClipMatrix;
-    math::mat4f clipFromWorldMatrix;
-    math::mat4f worldFromClipMatrix;
-    math::float4 clipTransform;     // [sx, sy, tx, ty] only used by VERTEX_DOMAIN_DEVICE
+    math::mat4f viewFromWorldMatrix;    // clip    view <- world    : view matrix
+    math::mat4f worldFromViewMatrix;    // clip    view -> world    : model matrix
+    math::mat4f clipFromViewMatrix;     // clip <- view    world    : projection matrix
+    math::mat4f viewFromClipMatrix;     // clip -> view    world    : inverse projection matrix
+    math::mat4f clipFromWorldMatrix[CONFIG_MAX_STEREOSCOPIC_EYES]; // clip <- view <- world
+    math::mat4f worldFromClipMatrix;    // clip -> view -> world
+    math::mat4f userWorldFromWorldMatrix;   // userWorld <- world
+    math::float4 clipTransform;             // [sx, sy, tx, ty] only used by VERTEX_DOMAIN_DEVICE
+
+    // --------------------------------------------------------------------------------------------
 
     math::float2 clipControl;       // clip control
-    float time;                     // time in seconds, with a 1 second period
+    float time;                     // time in seconds, with a 1-second period
     float temporalNoise;            // noise [0,1] when TAA is used, 0 otherwise
     math::float4 userTime;          // time(s), (double)time - (float)time, 0, 0
 
@@ -67,14 +99,10 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
 
     float lodBias;                  // load bias to apply to user materials
     float refractionLodOffset;
-    float padding1;
-    float padding2;
+    math::float2 derivativesScale;
 
     // camera position in view space (when camera_at_origin is enabled), i.e. it's (0,0,0).
-    // Always add worldOffset in the shader to get the true world-space position of the camera.
-    math::float3 cameraPosition;
     float oneOverFarMinusNear;      // 1 / (f-n), always positive
-    math::float3 worldOffset;       // this is (0,0,0) when camera_at_origin is disabled
     float nearOverFarMinusNear;     // n / (f-n), always positive
     float cameraFar;                // camera *culling* far-plane distance, always positive (projection far is at +inf)
     float exposure;
@@ -84,15 +112,13 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     // AO
     float aoSamplingQualityAndEdgeDistance;     // <0: no AO, 0: bilinear, !0: bilateral edge distance
     float aoBentNormals;                        // 0: no AO bent normal, >0.0 AO bent normals
-    float aoReserved0;
-    float aoReserved1;
 
     // --------------------------------------------------------------------------------------------
     // Dynamic Lighting [variant: DYN]
     // --------------------------------------------------------------------------------------------
     math::float4 zParams;                       // froxel Z parameters
     math::uint3 fParams;                        // stride-x, stride-y, stride-z
-    uint32_t lightChannels;                     // light channel bits
+    int32_t lightChannels;                      // light channel bits
     math::float2 froxelCountXY;
 
     // IBL
@@ -107,7 +133,7 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     float padding0;
     math::float4 lightColorIntensity;           // directional light
     math::float4 sun;                           // cos(sunAngle), sin(sunAngle), 1/(sunAngle*HALO_SIZE-sunAngle), HALO_EXP
-    math::float2 lightFarAttenuationParams;     // a, a/far (a=1/pct-of-far)
+    math::float2 shadowFarAttenuationParams;    // a, a/far (a=1/pct-of-far)
 
     // --------------------------------------------------------------------------------------------
     // Directional light shadowing [variant: SRE | DIR]
@@ -115,19 +141,17 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     // bit 0: directional (sun) shadow enabled
     // bit 1: directional (sun) screen-space contact shadow enabled
     // bit 8-15: screen-space contact shadows ray casting steps
-    uint32_t directionalShadows;
+    int32_t directionalShadows;
     float ssContactShadowDistance;
 
     // position of cascade splits, in world space (not including the near plane)
     // -Inf stored in unused components
     math::float4 cascadeSplits;
     // bit 0-3: cascade count
-    // bit 4: visualize cascades
     // bit 8-11: cascade has visible shadows
-    uint32_t cascades;
-    float reserved0;
-    float reserved1;                    // normal bias
+    int32_t cascades;
     float shadowPenumbraRatioScale;     // For DPCF or PCSS, scale penumbra ratio for artistic use
+    math::float2 lightFarAttenuationParams;     // a, a/far (a=1/pct-of-far)
 
     // --------------------------------------------------------------------------------------------
     // VSM shadows [variant: VSM]
@@ -140,16 +164,19 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     // --------------------------------------------------------------------------------------------
     // Fog [variant: FOG]
     // --------------------------------------------------------------------------------------------
+    math::float3 fogDensity;        // { density, -falloff * yc, density * exp(-fallof * yc) }
     float fogStart;
     float fogMaxOpacity;
-    float fogHeight;
-    float fogHeightFalloff;         // falloff * 1.44269
+    uint32_t fogMinMaxMip;
+    float fogHeightFalloff;
+    float fogCutOffDistance;
     math::float3 fogColor;
-    float fogDensity;               // (density/falloff)*exp(-falloff*(camera.y - fogHeight))
+    float fogColorFromIbl;
     float fogInscatteringStart;
     float fogInscatteringSize;
-    float fogColorFromIbl;
-    float fogReserved0;
+    float fogOneOverFarMinusNear;
+    float fogNearOverFarMinusNear;
+    std140::mat33 fogFromWorldMatrix;
 
     // --------------------------------------------------------------------------------------------
     // Screen-space reflections [variant: SSR (i.e.: VSM | SRE)]
@@ -161,8 +188,21 @@ struct PerViewUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     float ssrDistance;                  // ssr world raycast distance, 0 when ssr is off
     float ssrStride;                    // ssr texel stride, >= 1.0
 
+    // --------------------------------------------------------------------------------------------
+    // user defined global variables
+    // --------------------------------------------------------------------------------------------
+    math::float4 custom[4];
+
+    // --------------------------------------------------------------------------------------------
+    // for feature level 0 / es2 usage
+    // --------------------------------------------------------------------------------------------
+    int32_t rec709;                     // Only for ES2, 0 or 1, whether we need to do sRGB conversion
+    float es2Reserved0;
+    float es2Reserved1;
+    float es2Reserved2;
+
     // bring PerViewUib to 2 KiB
-    math::float4 reserved[63];
+    math::float4 reserved[40];
 };
 
 // 2 KiB == 128 float4s
@@ -173,37 +213,33 @@ static_assert(sizeof(PerViewUib) == sizeof(math::float4) * 128,
 // MARK: -
 
 struct PerRenderableData {
-
-    struct alignas(16) vec3_std140 : public std::array<float, 3> { };
-    struct mat33_std140 : public std::array<vec3_std140, 3> {
-        mat33_std140& operator=(math::mat3f const& rhs) noexcept {
-            for (int i = 0; i < 3; i++) {
-                (*this)[i][0] = rhs[i][0];
-                (*this)[i][1] = rhs[i][1];
-                (*this)[i][2] = rhs[i][2];
-            }
-            return *this;
-        }
-    };
-
-    math::mat4f worldFromModelMatrix;
-    mat33_std140 worldFromModelNormalMatrix;
-    uint32_t morphTargetCount;
-    uint32_t flagsChannels;                   // see packFlags() below (0x00000fll)
-    uint32_t objectId;                        // used for picking
+    std140::mat44 worldFromModelMatrix;
+    std140::mat33 worldFromModelNormalMatrix;
+    int32_t morphTargetCount;
+    int32_t flagsChannels;                   // see packFlags() below (0x00000fll)
+    int32_t objectId;                        // used for picking
     // TODO: We need a better solution, this currently holds the average local scale for the renderable
     float userData;
 
     math::float4 reserved[8];
 
     static uint32_t packFlagsChannels(
-            bool skinning, bool morphing, bool contactShadows, uint8_t channels) noexcept {
-        return (skinning       ? 0x100 : 0) |
-               (morphing       ? 0x200 : 0) |
-               (contactShadows ? 0x400 : 0) |
+            bool skinning, bool morphing, bool contactShadows, bool hasInstanceBuffer,
+            uint8_t channels) noexcept {
+        return (skinning              ? 0x100 : 0) |
+               (morphing              ? 0x200 : 0) |
+               (contactShadows        ? 0x400 : 0) |
+               (hasInstanceBuffer     ? 0x800 : 0) |
                channels;
     }
 };
+
+#ifndef _MSC_VER
+// not sure why this static_assert fails on MSVC
+static_assert(std::is_trivially_default_constructible_v<PerRenderableData>,
+        "make sure PerRenderableData stays trivially_default_constructible");
+#endif
+
 static_assert(sizeof(PerRenderableData) == 256,
         "sizeof(PerRenderableData) must be 256 bytes");
 
@@ -275,6 +311,13 @@ struct FroxelRecordUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
 static_assert(sizeof(FroxelRecordUib) == 16384,
         "FroxelRecordUib should be exactly 16KiB");
 
+struct FroxelsUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
+    static constexpr std::string_view _name{ "FroxelsUniforms" };
+    math::uint4 records[1024];
+};
+static_assert(sizeof(FroxelsUib) == 16384,
+        "FroxelsUib should be exactly 16KiB");
+
 // ------------------------------------------------------------------------------------------------
 // MARK: -
 
@@ -284,8 +327,9 @@ struct PerRenderableBoneUib { // NOLINT(cppcoreguidelines-pro-type-member-init)
     struct alignas(16) BoneData {
         // bone transform, last row assumed [0,0,0,1]
         math::float4 transform[3];
-        // 8 first cofactor matrix of transform's upper left
-        math::uint4 cof;
+        // 4 first cofactor matrix of transform's upper left
+        math::float3 cof0;
+        float cof1x;
     };
     BoneData bones[CONFIG_MAX_BONE_COUNT];
 };

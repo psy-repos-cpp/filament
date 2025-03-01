@@ -40,13 +40,21 @@ struct PlatformCocoaTouchGLImpl {
     EAGLContext* mGLContext = nullptr;
     CAEAGLLayer* mCurrentGlLayer = nullptr;
     std::vector<CAEAGLLayer*> mHeadlessGlLayers;
+    std::vector<EAGLContext*> mAdditionalContexts;
     CGRect mCurrentGlLayerRect;
     GLuint mDefaultFramebuffer = 0;
     GLuint mDefaultColorbuffer = 0;
     GLuint mDefaultDepthbuffer = 0;
     CVOpenGLESTextureCacheRef mTextureCache = nullptr;
     CocoaTouchExternalImage::SharedGl* mExternalImageSharedGl = nullptr;
+    struct ExternalImageCocoaTouchGL : public Platform::ExternalImage {
+        CVPixelBufferRef cvBuffer;
+    protected:
+        ~ExternalImageCocoaTouchGL() noexcept final;
+    };
 };
+
+PlatformCocoaTouchGLImpl::ExternalImageCocoaTouchGL::~ExternalImageCocoaTouchGL() noexcept = default;
 
 PlatformCocoaTouchGL::PlatformCocoaTouchGL()
         : pImpl(new PlatformCocoaTouchGLImpl) {
@@ -60,7 +68,7 @@ Driver* PlatformCocoaTouchGL::createDriver(void* const sharedGLContext, const Pl
     EAGLSharegroup* sharegroup = (__bridge EAGLSharegroup*) sharedGLContext;
 
     EAGLContext *context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3 sharegroup:sharegroup];
-    ASSERT_POSTCONDITION(context, "Unable to create OpenGL ES context.");
+    FILAMENT_CHECK_POSTCONDITION(context) << "Unable to create OpenGL ES context.";
 
     [EAGLContext setCurrentContext:context];
 
@@ -91,6 +99,20 @@ Driver* PlatformCocoaTouchGL::createDriver(void* const sharedGLContext, const Pl
     pImpl->mExternalImageSharedGl = new CocoaTouchExternalImage::SharedGl();
 
     return OpenGLPlatform::createDefaultDriver(this, sharedGLContext, driverConfig);
+}
+
+bool PlatformCocoaTouchGL::isExtraContextSupported() const noexcept {
+    return true;
+}
+
+void PlatformCocoaTouchGL::createContext(bool shared) {
+    EAGLSharegroup* const sharegroup = shared ? pImpl->mGLContext.sharegroup : nil;
+    EAGLContext* const context = [[EAGLContext alloc]
+                                  initWithAPI:kEAGLRenderingAPIOpenGLES3
+                                   sharegroup:sharegroup];
+    FILAMENT_CHECK_POSTCONDITION(context) << "Unable to create extra OpenGL ES context.";
+    [EAGLContext setCurrentContext:context];
+    pImpl->mAdditionalContexts.push_back(context);
 }
 
 void PlatformCocoaTouchGL::terminate() noexcept {
@@ -128,14 +150,15 @@ void PlatformCocoaTouchGL::destroySwapChain(Platform::SwapChain* swapChain) noex
     }
 }
 
-uint32_t PlatformCocoaTouchGL::createDefaultRenderTarget() noexcept {
+uint32_t PlatformCocoaTouchGL::getDefaultFramebufferObject() noexcept {
     return pImpl->mDefaultFramebuffer;
 }
 
-void PlatformCocoaTouchGL::makeCurrent(SwapChain* drawSwapChain, SwapChain* readSwapChain) noexcept {
+bool PlatformCocoaTouchGL::makeCurrent(ContextType type, SwapChain* drawSwapChain,
+        SwapChain* readSwapChain) noexcept {
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
-                                  "PlatformCocoaTouchGL does not support using distinct draw/read swap chains.");
-    CAEAGLLayer* glLayer = (__bridge CAEAGLLayer*) drawSwapChain;
+            "PlatformCocoaTouchGL does not support using distinct draw/read swap chains.");
+    CAEAGLLayer* const glLayer = (__bridge CAEAGLLayer*) drawSwapChain;
 
     [EAGLContext setCurrentContext:pImpl->mGLContext];
 
@@ -144,24 +167,31 @@ void PlatformCocoaTouchGL::makeCurrent(SwapChain* drawSwapChain, SwapChain* read
         pImpl->mCurrentGlLayer = glLayer;
         pImpl->mCurrentGlLayerRect = glLayer.bounds;
 
-        glBindFramebuffer(GL_FRAMEBUFFER, pImpl->mDefaultFramebuffer);
-
+        // associate our default color renderbuffer with the swapchain
+        // this renderbuffer is an attachment of the default FBO
         glBindRenderbuffer(GL_RENDERBUFFER, pImpl->mDefaultColorbuffer);
         [pImpl->mGLContext renderbufferStorage:GL_RENDERBUFFER fromDrawable:glLayer];
 
         // Retrieve width and height of color buffer.
-        GLint width;
-        GLint height;
+        GLint width, height;
         glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &width);
         glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &height);
 
+        // resize the depth buffer accordingly
         glBindRenderbuffer(GL_RENDERBUFFER, pImpl->mDefaultDepthbuffer);
         glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
 
         // Test the framebuffer for completeness.
-        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        ASSERT_POSTCONDITION(status == GL_FRAMEBUFFER_COMPLETE, "Incomplete framebuffer.");
+        // We must save/restore the framebuffer binding because filament is tracking the state
+        GLint oldFramebuffer;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &oldFramebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, pImpl->mDefaultFramebuffer);
+        GLenum const status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        FILAMENT_CHECK_POSTCONDITION(status == GL_FRAMEBUFFER_COMPLETE)
+                << "Incomplete framebuffer.";
+        glBindFramebuffer(GL_FRAMEBUFFER, oldFramebuffer);
     }
+    return true;
 }
 
 void PlatformCocoaTouchGL::commit(Platform::SwapChain* swapChain) noexcept {
@@ -175,13 +205,10 @@ void PlatformCocoaTouchGL::commit(Platform::SwapChain* swapChain) noexcept {
 OpenGLPlatform::ExternalTexture* PlatformCocoaTouchGL::createExternalImageTexture() noexcept {
     ExternalTexture* outTexture = new CocoaTouchExternalImage(pImpl->mTextureCache,
             *pImpl->mExternalImageSharedGl);
-    // the actual id/target will be set in setExternalImage*(
-    outTexture->id = 0;
-    outTexture->target = GL_TEXTURE_2D;
     return outTexture;
 }
 
-void PlatformCocoaTouchGL::destroyExternalImage(ExternalTexture* texture) noexcept {
+void PlatformCocoaTouchGL::destroyExternalImageTexture(ExternalTexture* texture) noexcept {
     auto* p = static_cast<CocoaTouchExternalImage*>(texture);
     delete p;
 }
@@ -205,5 +232,36 @@ bool PlatformCocoaTouchGL::setExternalImage(void* externalImage, ExternalTexture
     // cocoaExternalImage->getInternalFormat();
     return true;
 }
+
+Platform::ExternalImageHandle PlatformCocoaTouchGL::createExternalImage(void* cvPixelBuffer) noexcept {
+    auto* p = new(std::nothrow) PlatformCocoaTouchGLImpl::ExternalImageCocoaTouchGL;
+    p->cvBuffer = (CVPixelBufferRef) cvPixelBuffer;
+    return ExternalImageHandle{ p };
+}
+
+void PlatformCocoaTouchGL::retainExternalImage(ExternalImageHandleRef externalImage) noexcept {
+    auto const* const cocoaTouchGlExternalImage
+            = static_cast<PlatformCocoaTouchGLImpl::ExternalImageCocoaTouchGL const*>(externalImage.get());
+    // Take ownership of the passed in buffer. It will be released the next time
+    // setExternalImage is called, or when the texture is destroyed.
+    CVPixelBufferRef pixelBuffer = cocoaTouchGlExternalImage->cvBuffer;
+    CVPixelBufferRetain(pixelBuffer);
+}
+
+bool PlatformCocoaTouchGL::setExternalImage(ExternalImageHandleRef externalImage, ExternalTexture* texture) noexcept {
+    auto const* const cocoaTouchGlExternalImage
+            = static_cast<PlatformCocoaTouchGLImpl::ExternalImageCocoaTouchGL const*>(externalImage.get());
+    CVPixelBufferRef cvPixelBuffer = cocoaTouchGlExternalImage->cvBuffer;
+    CocoaTouchExternalImage* cocoaExternalImage = static_cast<CocoaTouchExternalImage*>(texture);
+    if (!cocoaExternalImage->set(cvPixelBuffer)) {
+        return false;
+    }
+    texture->target = cocoaExternalImage->getTarget();
+    texture->id = cocoaExternalImage->getGlTexture();
+    // we used to set the internalFormat, but it's not used anywhere on the gl backend side
+    // cocoaExternalImage->getInternalFormat();
+    return true;
+}
+
 
 } // namespace filament::backend

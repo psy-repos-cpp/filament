@@ -476,7 +476,7 @@ Energy conservation is one of the key components of a good BRDF for physically b
 <p>
 
 
-For the specular term, \(f_m\) is a mirror BRDF that can be modeled with the Fresnel law, noted \(F\) in the Cook-Torrance approximation of the microfacet model integration:
+For the specular term, \(f_r\) is a mirror BRDF that can be modeled with the Fresnel law, noted \(F\) in the Cook-Torrance approximation of the microfacet model integration:
 
 </p><p>
 
@@ -857,7 +857,7 @@ The full GLSL implementation of the standard model is shown in <a href="#listing
 <span class="line">    <span class="hljs-comment">// perceptually linear roughness to roughness (see parameterization)</span></span>
 <span class="line">    <span class="hljs-type">float</span> roughness = perceptualRoughness * perceptualRoughness;</span>
 <span class="line"></span>
-<span class="line">    <span class="hljs-type">float</span> D = D_GGX(NoH, a);</span>
+<span class="line">    <span class="hljs-type">float</span> D = D_GGX(NoH, roughness);</span>
 <span class="line">    <span class="hljs-type">vec3</span>  F = F_Schlick(LoH, f0);</span>
 <span class="line">    <span class="hljs-type">float</span> V = V_SmithGGXCorrelated(NoV, NoL, roughness);</span>
 <span class="line"></span>
@@ -3164,7 +3164,7 @@ I(f(n, v, \alpha))        \equiv \frac{1}{N}\sum_{\forall \, i \in image} f(l_i,
 </p><p>
 
 However, in practice we're using <em class="underscore">importance sampling</em> which needs to take the \(pdf\) of the distribution
-into account and adds a term \(\frac{\left&lt;\VoH\right&gt;}{D(h_i, \alpha)\left&lt;\NoH\right&gt;}\).
+into account and adds a term \(\frac{4\left&lt;\VoH\right&gt;}{D(h_i, \alpha)\left&lt;\NoH\right&gt;}\).
 See <a href="#importancesamplingfortheibl">Importance Sampling For The IBL</a> section:
 
 </p><p>
@@ -5274,7 +5274,7 @@ The <em class="underscore">important direction samples</em> \(l_i\) are calculat
 </p><p>
 
 $$\begin{equation}
-p(T_r(x)) = p(x) |J(T_r)|
+p(T_r(x)) = p(x) |J(T_r)|^{-1}
 \end{equation}$$
 
 </p><p>
@@ -5285,8 +5285,8 @@ the transform from \(h_i\) to \(l_i\) and the determinant of its Jacobian is giv
 </p><p>
 
 $$\begin{equation}\label{iblPDF}
-p(l,v,\Theta) = D(h,\alpha) \left&lt; \NoH \right&gt; |J_{h \rightarrow l}| \\
-|J_{h \rightarrow l}| = \frac{1}{4 \left&lt; \VoH \right&gt;}
+p(l,v,\Theta) = D(h,\alpha) \left&lt; \NoH \right&gt; |J_{h \rightarrow l}|^{-1} \\
+|J_{h \rightarrow l}| = 4 \left&lt; \VoH \right&gt;
 \end{equation}$$
 
 </p>
@@ -5776,7 +5776,7 @@ Since \(\left&lt; cos \theta \right&gt;\) does not depend on \(\phi\) (azimuthal
 
 $$\begin{align*}
 C^0_l &amp;= 2\pi \int_0^{\pi} \left&lt; cos \theta \right&gt; y^0_l(\theta) sin \theta d\theta \\
-C^0_l &amp;= 2\pi K^)_l \int_0^{\frac{\pi}{2}} P^0_l(cos \theta) cos \theta sin \theta d\theta \\
+C^0_l &amp;= 2\pi K^m_l \int_0^{\frac{\pi}{2}} P^0_l(cos \theta) cos \theta sin \theta d\theta \\
 C^m_l &amp;= 0, m != 0
 \end{align*}$$
 

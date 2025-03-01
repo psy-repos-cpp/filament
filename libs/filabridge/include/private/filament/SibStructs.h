@@ -25,12 +25,12 @@ namespace filament {
 struct PerViewSib {
     // indices of each sampler in this SamplerInterfaceBlock (see: getPerViewSib())
     static constexpr size_t SHADOW_MAP     = 0;     // user defined (1024x1024) DEPTH, array
-    static constexpr size_t FROXELS        = 1;     // 64x2048, RG16 {index, count, reserved}
-    static constexpr size_t IBL_DFG_LUT    = 2;     // user defined (128x128), RGB16F
-    static constexpr size_t IBL_SPECULAR   = 3;     // user defined, user defined, CUBEMAP
-    static constexpr size_t SSAO           = 4;     // variable, RGB8 {AO, [depth]}
-    static constexpr size_t SSR            = 5;     // variable, RGB_11_11_10, mipmapped
-    static constexpr size_t STRUCTURE      = 6;     // variable, DEPTH
+    static constexpr size_t IBL_DFG_LUT    = 1;     // user defined (128x128), RGB16F
+    static constexpr size_t IBL_SPECULAR   = 2;     // user defined, user defined, CUBEMAP
+    static constexpr size_t SSAO           = 3;     // variable, RGB8 {AO, [depth]}
+    static constexpr size_t SSR            = 4;     // variable, RGB_11_11_10, mipmapped
+    static constexpr size_t STRUCTURE      = 5;     // variable, DEPTH
+    static constexpr size_t FOG            = 6;     // variable, user defined, CUBEMAP
 
     static constexpr size_t SAMPLER_COUNT  = 7;
 };
@@ -40,6 +40,12 @@ struct PerRenderPrimitiveMorphingSib {
     static constexpr size_t TANGENTS       = 1;
 
     static constexpr size_t SAMPLER_COUNT  = 2;
+};
+
+struct PerRenderPrimitiveSkinningSib {
+    static constexpr size_t BONE_INDICES_AND_WEIGHTS = 0;   //bone indices and weights
+
+    static constexpr size_t SAMPLER_COUNT  = 1;
 };
 
 } // namespace filament

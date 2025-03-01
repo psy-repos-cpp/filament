@@ -2,6 +2,7 @@
 *.a
 *.so
 *.exe
+.cache/
 .vscode/
 tags
 TAGS
@@ -11,6 +12,7 @@ Test/localResults/
 External/googletest
 External/spirv-tools
 out/
+CMakeUserPresets.json
 
 # GN generated files
 .cipd/

@@ -23,8 +23,9 @@
 #include "utils/unwindows.h"
 
 #include <backend/platforms/OpenGLPlatform.h>
-
 #include <backend/DriverEnums.h>
+
+#include <vector>
 
 namespace filament::backend {
 
@@ -46,10 +47,13 @@ protected:
 
     void terminate() noexcept override;
 
+    bool isExtraContextSupported() const noexcept override;
+    void createContext(bool shared) override;
+
     SwapChain* createSwapChain(void* nativewindow, uint64_t flags) noexcept override;
     SwapChain* createSwapChain(uint32_t width, uint32_t height, uint64_t flags) noexcept override;
     void destroySwapChain(SwapChain* swapChain) noexcept override;
-    void makeCurrent(SwapChain* drawSwapChain, SwapChain* readSwapChain) noexcept override;
+    bool makeCurrent(ContextType type, SwapChain* drawSwapChain, SwapChain* readSwapChain) noexcept override;
     void commit(SwapChain* swapChain) noexcept override;
 
 protected:
@@ -57,6 +61,8 @@ protected:
     HWND mHWnd = NULL;
     HDC mWhdc = NULL;
     PIXELFORMATDESCRIPTOR mPfd = {};
+    std::vector<HGLRC> mAdditionalContexts;
+    std::vector<int> mAttribs;
 };
 
 } // namespace filament::backend

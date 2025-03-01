@@ -24,12 +24,12 @@ value_object<View::BloomOptions>("View$BloomOptions")
     // JavaScript binding for dirtStrength is not yet supported, must use default value.
     .field("strength", &View::BloomOptions::strength)
     .field("resolution", &View::BloomOptions::resolution)
-    .field("anamorphism", &View::BloomOptions::anamorphism)
     .field("levels", &View::BloomOptions::levels)
     .field("blendMode", &View::BloomOptions::blendMode)
     .field("threshold", &View::BloomOptions::threshold)
     .field("enabled", &View::BloomOptions::enabled)
     .field("highlight", &View::BloomOptions::highlight)
+    .field("quality", &View::BloomOptions::quality)
     .field("lensFlare", &View::BloomOptions::lensFlare)
     .field("starburst", &View::BloomOptions::starburst)
     .field("chromaticAberration", &View::BloomOptions::chromaticAberration)
@@ -43,6 +43,7 @@ value_object<View::BloomOptions>("View$BloomOptions")
 
 value_object<View::FogOptions>("View$FogOptions")
     .field("distance", &View::FogOptions::distance)
+    .field("cutOffDistance", &View::FogOptions::cutOffDistance)
     .field("maximumOpacity", &View::FogOptions::maximumOpacity)
     .field("height", &View::FogOptions::height)
     .field("heightFalloff", &View::FogOptions::heightFalloff)
@@ -51,11 +52,13 @@ value_object<View::FogOptions>("View$FogOptions")
     .field("inScatteringStart", &View::FogOptions::inScatteringStart)
     .field("inScatteringSize", &View::FogOptions::inScatteringSize)
     .field("fogColorFromIbl", &View::FogOptions::fogColorFromIbl)
+    // JavaScript binding for skyColor is not yet supported, must use default value.
     .field("enabled", &View::FogOptions::enabled)
     ;
 
 value_object<View::DepthOfFieldOptions>("View$DepthOfFieldOptions")
     .field("cocScale", &View::DepthOfFieldOptions::cocScale)
+    .field("cocAspectRatio", &View::DepthOfFieldOptions::cocAspectRatio)
     .field("maxApertureDiameter", &View::DepthOfFieldOptions::maxApertureDiameter)
     .field("enabled", &View::DepthOfFieldOptions::enabled)
     .field("filter", &View::DepthOfFieldOptions::filter)
@@ -117,7 +120,19 @@ value_object<View::MultiSampleAntiAliasingOptions>("View$MultiSampleAntiAliasing
 value_object<View::TemporalAntiAliasingOptions>("View$TemporalAntiAliasingOptions")
     .field("filterWidth", &View::TemporalAntiAliasingOptions::filterWidth)
     .field("feedback", &View::TemporalAntiAliasingOptions::feedback)
+    .field("lodBias", &View::TemporalAntiAliasingOptions::lodBias)
+    .field("sharpness", &View::TemporalAntiAliasingOptions::sharpness)
     .field("enabled", &View::TemporalAntiAliasingOptions::enabled)
+    .field("upscaling", &View::TemporalAntiAliasingOptions::upscaling)
+    .field("filterHistory", &View::TemporalAntiAliasingOptions::filterHistory)
+    .field("filterInput", &View::TemporalAntiAliasingOptions::filterInput)
+    .field("useYCoCg", &View::TemporalAntiAliasingOptions::useYCoCg)
+    .field("boxType", &View::TemporalAntiAliasingOptions::boxType)
+    .field("boxClipping", &View::TemporalAntiAliasingOptions::boxClipping)
+    .field("jitterPattern", &View::TemporalAntiAliasingOptions::jitterPattern)
+    .field("varianceGamma", &View::TemporalAntiAliasingOptions::varianceGamma)
+    .field("preventFlickering", &View::TemporalAntiAliasingOptions::preventFlickering)
+    .field("historyReprojection", &View::TemporalAntiAliasingOptions::historyReprojection)
     ;
 
 value_object<View::ScreenSpaceReflectionsOptions>("View$ScreenSpaceReflectionsOptions")
@@ -144,6 +159,10 @@ value_object<View::VsmShadowOptions>("View$VsmShadowOptions")
 value_object<View::SoftShadowOptions>("View$SoftShadowOptions")
     .field("penumbraScale", &View::SoftShadowOptions::penumbraScale)
     .field("penumbraRatioScale", &View::SoftShadowOptions::penumbraRatioScale)
+    ;
+
+value_object<View::StereoscopicOptions>("View$StereoscopicOptions")
+    .field("enabled", &View::StereoscopicOptions::enabled)
     ;
 
 } // EMSCRIPTEN_BINDINGS

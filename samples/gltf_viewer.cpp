@@ -41,9 +41,12 @@
 
 #include <camutils/Manipulator.h>
 
+#include <private/filament/EngineEnums.h>
+
 #include <getopt/getopt.h>
 
 #include <utils/NameComponentManager.h>
+#include <utils/Log.h>
 
 #include <math/vec3.h>
 #include <math/vec4.h>
@@ -53,13 +56,25 @@
 #include <imgui.h>
 #include <filagui/ImGuiExtensions.h>
 
+#include <cgltf.h>
+
+#include <algorithm>
 #include <array>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <set>
+#include <sstream>
 #include <string>
 
 #include "generated/resources/gltf_demo.h"
 #include "materials/uberarchive.h"
+
+#if FILAMENT_DISABLE_MATOPT
+#   define OPTIMIZE_MATERIALS false
+#else
+#   define OPTIMIZE_MATERIALS true
+#endif
 
 using namespace filament;
 using namespace filament::math;
@@ -78,6 +93,7 @@ struct App {
     ViewerGui* viewer;
     Config config;
     Camera* mainCamera;
+    Entity rootTransformEntity;
 
     AssetLoader* assetLoader;
     FilamentAsset* asset = nullptr;
@@ -93,6 +109,8 @@ struct App {
     bool recomputeAabb = false;
 
     bool actualSize = false;
+    bool originIsFarAway = false;
+    float originDistance = 1.0f;
 
     struct Scene {
         Entity groundPlane;
@@ -121,12 +139,15 @@ struct App {
 
     AutomationSpec* automationSpec = nullptr;
     AutomationEngine* automationEngine = nullptr;
+    bool screenshot = false;
+    uint8_t screenshotSeq = 0;
+    bool screenshotAsPPM = false;
 };
 
 static const char* DEFAULT_IBL = "assets/ibl/lightroom_14b";
 
 static void printUsage(char* name) {
-    std::string exec_name(Path(name).getName());
+    std::string const exec_name(Path(name).getName());
     std::string usage(
         "SHOWCASE renders the specified glTF file, or a built-in file if none is specified\n"
         "Usage:\n"
@@ -135,7 +156,18 @@ static void printUsage(char* name) {
         "   --help, -h\n"
         "       Prints this message\n\n"
         "   --api, -a\n"
-        "       Specify the backend API: opengl (default), vulkan, or metal\n\n"
+        "       Specify the backend API: "
+
+// Matches logic in filament/backend/src/PlatformFactory.cpp for Backend::DEFAULT
+#if defined(FILAMENT_IOS) || defined(__APPLE__)
+        "opengl, vulkan, or metal (default)"
+#elif defined(FILAMENT_DRIVER_SUPPORTS_VULKAN)
+        "opengl, vulkan (default), or metal"
+#else
+        "opengl (default), vulkan, or metal"
+#endif
+        "\n\n"
+
         "   --feature-level=<1|2|3>, -f <1|2|3>\n"
         "       Specify the feature level to use. The default is the highest supported feature level.\n\n"
         "   --batch=<path to JSON file or 'default'>, -b\n"
@@ -158,12 +190,22 @@ static void printUsage(char* name) {
         "       Set the camera mode: orbit (default) or flight\n"
         "       Flight mode uses the following controls:\n"
         "           Click and drag the mouse to pan the camera\n"
-        "           Use the scroll weel to adjust movement speed\n"
+        "           Use the scroll wheel to adjust movement speed\n"
         "           W / S: forward / backward\n"
         "           A / D: left / right\n"
         "           E / Q: up / down\n\n"
+        "   --eyes=<stereoscopic eyes>, -y <stereoscopic eyes>\n"
+        "       Sets the number of stereoscopic eyes (default: 2) when stereoscopic rendering is\n"
+        "       enabled.\n\n"
         "   --split-view, -v\n"
-        "       Splits the window into 4 views\n"
+        "       Splits the window into 4 views\n\n"
+        "   --vulkan-gpu-hint=<hint>, -g\n"
+        "       Vulkan backend allows user to choose their GPU.\n"
+        "       You can provide the index of the GPU or\n"
+        "       a substring to match against the device name\n\n"
+        "   --screenshot-as-ppm, -d\n"
+        "       export PPM as oppose to TIFF screenshots\n\n"
+
     );
     const std::string from("SHOWCASE");
     for (size_t pos = usage.find(from); pos != std::string::npos; pos = usage.find(from, pos)) {
@@ -178,26 +220,29 @@ static std::ifstream::pos_type getFileSize(const char* filename) {
 }
 
 static int handleCommandLineArguments(int argc, char* argv[], App* app) {
-    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:b:ev";
+    static constexpr const char* OPTSTR = "ha:f:i:usc:rt:b:evg:d";
     static const struct option OPTIONS[] = {
-        { "help",         no_argument,          nullptr, 'h' },
-        { "api",          required_argument,    nullptr, 'a' },
-        { "feature-level",required_argument,    nullptr, 'f' },
-        { "batch",        required_argument,    nullptr, 'b' },
-        { "headless",     no_argument,          nullptr, 'e' },
-        { "ibl",          required_argument,    nullptr, 'i' },
-        { "ubershader",   no_argument,          nullptr, 'u' },
-        { "actual-size",  no_argument,          nullptr, 's' },
-        { "camera",       required_argument,    nullptr, 'c' },
-        { "recompute-aabb", no_argument,        nullptr, 'r' },
-        { "settings",     required_argument,    nullptr, 't' },
-        { "split-view",   no_argument,          nullptr, 'v' },
+        { "help",              no_argument,          nullptr, 'h' },
+        { "api",               required_argument,    nullptr, 'a' },
+        { "feature-level",     required_argument,    nullptr, 'f' },
+        { "batch",             required_argument,    nullptr, 'b' },
+        { "headless",          no_argument,          nullptr, 'e' },
+        { "ibl",               required_argument,    nullptr, 'i' },
+        { "ubershader",        no_argument,          nullptr, 'u' },
+        { "actual-size",       no_argument,          nullptr, 's' },
+        { "camera",            required_argument,    nullptr, 'c' },
+        { "eyes",              required_argument,    nullptr, 'y' },
+        { "recompute-aabb",    no_argument,          nullptr, 'r' },
+        { "settings",          required_argument,    nullptr, 't' },
+        { "split-view",        no_argument,          nullptr, 'v' },
+        { "vulkan-gpu-hint",   required_argument,    nullptr, 'g' },
+        { "screenshot-as-ppm", no_argument,          nullptr, 'd' },
         { nullptr, 0, nullptr, 0 }
     };
     int opt;
     int option_index = 0;
     while ((opt = getopt_long(argc, argv, OPTSTR, OPTIONS, &option_index)) >= 0) {
-        std::string arg(optarg ? optarg : "");
+        std::string const arg(optarg ? optarg : "");
         switch (opt) {
             default:
             case 'h':
@@ -234,6 +279,19 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
                     std::cerr << "Unrecognized camera mode. Must be 'flight'|'orbit'.\n";
                 }
                 break;
+            case 'y': {
+                int eyeCount = 0;
+                try {
+                    eyeCount = std::stoi(arg);
+                } catch (std::invalid_argument &e) { }
+                if (eyeCount >= 1 && eyeCount <= CONFIG_MAX_STEREOSCOPIC_EYES) {
+                    app->config.stereoscopicEyeCount = eyeCount;
+                } else {
+                    std::cerr << "Eye count must be between 1 and CONFIG_MAX_STEREOSCOPIC_EYES ("
+                              << (int) CONFIG_MAX_STEREOSCOPIC_EYES << ") (inclusive).\n";
+                }
+                break;
+            }
             case 'e':
                 app->config.headless = true;
                 break;
@@ -258,6 +316,14 @@ static int handleCommandLineArguments(int argc, char* argv[], App* app) {
             }
             case 'v': {
                 app->config.splitView = true;
+                break;
+            }
+            case 'g': {
+                app->config.vulkanGPUHint = arg;
+                break;
+            }
+            case 'd': {
+                app->screenshotAsPPM = true;
                 break;
             }
         }
@@ -297,7 +363,7 @@ static void createGroundPlane(Engine* engine, Scene* scene, App& app) {
 
     Aabb aabb = app.asset->getBoundingBox();
     if (!app.actualSize) {
-        mat4f transform = fitIntoUnitCube(aabb, 4);
+        mat4f const transform = fitIntoUnitCube(aabb, 4);
         aabb = aabb.transform(transform);
     }
 
@@ -310,7 +376,7 @@ static void createGroundPlane(Engine* engine, Scene* scene, App& app) {
             {  planeExtent.x, 0, -planeExtent.z },
     };
 
-    short4 tbn = packSnorm16(
+    short4 const tbn = packSnorm16(
             mat3f::packTangentFrame(
                     mat3f{
                             float3{ 1.0f, 0.0f, 0.0f },
@@ -343,7 +409,7 @@ static void createGroundPlane(Engine* engine, Scene* scene, App& app) {
     indexBuffer->setBuffer(*engine, IndexBuffer::BufferDescriptor(
             indices, indexBuffer->getIndexCount() * sizeof(uint32_t)));
 
-    Entity groundPlane = em.create();
+    Entity const groundPlane = em.create();
     RenderableManager::Builder(1)
             .boundingBox({
                     {}, { planeExtent.x, 1e-4f, planeExtent.z }
@@ -456,40 +522,106 @@ static void onClick(App& app, View* view, ImVec2 pos) {
     });
 }
 
+static utils::Path getPathForIBLAsset(std::string_view string) {
+    auto isIBL = [] (utils::Path file) -> bool {
+        return file.getExtension() == "ktx" || file.getExtension() == "hdr" ||
+            file.getExtension() == "exr";
+
+    };
+
+    utils::Path filename{ string };
+    if (!filename.exists()) {
+        std::cerr << "file " << filename << " not found!" << std::endl;
+        return {};
+    }
+
+    if (filename.isDirectory()) {
+        std::vector<Path> files = filename.listContents();
+        if (std::none_of(files.cbegin(), files.cend(), isIBL)) {
+            return {};
+        }
+    } else if (!isIBL(filename)) {
+        return {};
+    }
+
+    return filename;
+}
+
+static utils::Path getPathForGLTFAsset(std::string_view string) {
+    auto isGLTF = [] (utils::Path file) -> bool {
+        return file.getExtension() == "gltf" || file.getExtension() == "glb";
+    };
+
+    utils::Path filename{ string };
+    if (!filename.exists()) {
+        std::cerr << "file " << filename << " not found!" << std::endl;
+        return {};
+    }
+
+    if (filename.isDirectory()) {
+        std::vector<Path> files = filename.listContents();
+        auto it = std::find_if(files.cbegin(), files.cend(), isGLTF);
+        if (it == files.end()) {
+            return {};
+        }
+        filename = *it;
+    } else if (!isGLTF(filename)) {
+        return {};
+    }
+
+    return filename;
+}
+
+static bool checkGLTFAsset(const utils::Path& filename) {
+    // Peek at the file size to allow pre-allocation.
+    long const contentSize = static_cast<long>(getFileSize(filename.c_str()));
+    if (contentSize <= 0) {
+        std::cerr << "Unable to open " << filename << std::endl;
+        return false;
+    }
+
+    // Consume the glTF file.
+    std::ifstream in(filename.c_str(), std::ifstream::binary | std::ifstream::in);
+    std::vector<uint8_t> buffer(static_cast<unsigned long>(contentSize));
+    if (!in.read((char*) buffer.data(), contentSize)) {
+        std::cerr << "Unable to read " << filename << std::endl;
+        return false;
+    }
+
+    // Try parsing the glTF file to check the validity of the file format.
+    cgltf_options options{};
+    cgltf_data* sourceAsset = nullptr;
+    cgltf_result result = cgltf_parse(&options, buffer.data(), contentSize, &sourceAsset);
+    cgltf_free(sourceAsset);
+    if (result != cgltf_result_success) {
+        slog.e << "Unable to parse glTF file." << io::endl;
+        return false;
+    }
+    return true;
+};
+
+
 int main(int argc, char** argv) {
     App app;
 
     app.config.title = "Filament";
     app.config.iblDirectory = FilamentApp::getRootAssetsPath() + DEFAULT_IBL;
 
-    int optionIndex = handleCommandLineArguments(argc, argv, &app);
+    int const optionIndex = handleCommandLineArguments(argc, argv, &app);
 
     utils::Path filename;
-    int num_args = argc - optionIndex;
+    int const num_args = argc - optionIndex;
     if (num_args >= 1) {
-        filename = argv[optionIndex];
-        if (!filename.exists()) {
-            std::cerr << "file " << filename << " not found!" << std::endl;
+        filename = getPathForGLTFAsset(argv[optionIndex]);
+        if (filename.isEmpty()) {
+            std::cerr << "no glTF file found in " << filename << std::endl;
             return 1;
-        }
-        if (filename.isDirectory()) {
-            auto files = filename.listContents();
-            for (auto file : files) {
-                if (file.getExtension() == "gltf" || file.getExtension() == "glb") {
-                    filename = file;
-                    break;
-                }
-            }
-            if (filename.isDirectory()) {
-                std::cerr << "no glTF file found in " << filename << std::endl;
-                return 1;
-            }
         }
     }
 
-    auto loadAsset = [&app](utils::Path filename) {
+    auto loadAsset = [&app](const utils::Path& filename) {
         // Peek at the file size to allow pre-allocation.
-        long contentSize = static_cast<long>(getFileSize(filename.c_str()));
+        long const contentSize = static_cast<long>(getFileSize(filename.c_str()));
         if (contentSize <= 0) {
             std::cerr << "Unable to open " << filename << std::endl;
             exit(1);
@@ -505,19 +637,62 @@ int main(int argc, char** argv) {
 
         // Parse the glTF file and create Filament entities.
         app.asset = app.assetLoader->createAsset(buffer.data(), buffer.size());
-        app.instance = app.asset->getInstance();
-        buffer.clear();
-        buffer.shrink_to_fit();
-
         if (!app.asset) {
             std::cerr << "Unable to parse " << filename << std::endl;
             exit(1);
         }
+
+        // pre-compile all material variants
+        std::set<Material*> materials;
+        RenderableManager const& rcm = app.engine->getRenderableManager();
+        Slice<Entity> const renderables{
+                app.asset->getRenderableEntities(), app.asset->getRenderableEntityCount() };
+        for (Entity const e: renderables) {
+            auto ri = rcm.getInstance(e);
+            size_t const c = rcm.getPrimitiveCount(ri);
+            for (size_t i = 0; i < c; i++) {
+                MaterialInstance* const mi = rcm.getMaterialInstanceAt(ri, i);
+                Material* ma = const_cast<Material *>(mi->getMaterial());
+                materials.insert(ma);
+            }
+        }
+        for (Material* ma : materials) {
+            // Don't attempt to precompile shaders on WebGL.
+            // Chrome already suffers from slow shader compilation:
+            // https://github.com/google/filament/issues/6615
+            // Precompiling shaders exacerbates the problem.
+#if !defined(__EMSCRIPTEN__)
+            // First compile high priority variants
+            ma->compile(Material::CompilerPriorityQueue::HIGH,
+                    UserVariantFilterBit::DIRECTIONAL_LIGHTING |
+                    UserVariantFilterBit::DYNAMIC_LIGHTING |
+                    UserVariantFilterBit::SHADOW_RECEIVER);
+
+            // and then, everything else at low priority, except STE, which is very uncommon.
+            ma->compile(Material::CompilerPriorityQueue::LOW,
+                    UserVariantFilterBit::FOG |
+                    UserVariantFilterBit::SKINNING |
+                    UserVariantFilterBit::SSR |
+                    UserVariantFilterBit::VSM);
+#endif
+        }
+
+        app.instance = app.asset->getInstance();
+        buffer.clear();
+        buffer.shrink_to_fit();
     };
 
-    auto loadResources = [&app] (utils::Path filename) {
+    auto setupIBL = [&app]() {
+        auto ibl = FilamentApp::get().getIBL();
+        if (ibl) {
+            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
+            app.viewer->getSettings().view.fogSettings.fogColorTexture = ibl->getFogTexture();
+        }
+    };
+
+    auto loadResources = [&app, &setupIBL] (const utils::Path& filename) {
         // Load external textures and buffers.
-        std::string gltfPath = filename.getAbsolutePath();
+        std::string const gltfPath = filename.getAbsolutePath();
         ResourceConfiguration configuration = {};
         configuration.engine = app.engine;
         configuration.gltfPath = gltfPath.c_str();
@@ -530,6 +705,8 @@ int main(int argc, char** argv) {
             app.resourceLoader->addTextureProvider("image/png", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/jpeg", app.stbDecoder);
             app.resourceLoader->addTextureProvider("image/ktx2", app.ktxDecoder);
+        } else {
+            app.resourceLoader->setConfiguration(configuration);
         }
 
         if (!app.resourceLoader->asyncBeginLoad(app.asset)) {
@@ -550,11 +727,7 @@ int main(int argc, char** argv) {
             instances[mi]->setStencilWrite(true);
             instances[mi]->setStencilOpDepthStencilPass(MaterialInstance::StencilOperation::INCR);
         }
-
-        auto ibl = FilamentApp::get().getIBL();
-        if (ibl) {
-            app.viewer->setIndirectLight(ibl->getIndirectLight(), ibl->getSphericalHarmonics());
-        }
+        setupIBL();
     };
 
     auto setup = [&](Engine* engine, View* view, Scene* scene) {
@@ -562,6 +735,12 @@ int main(int argc, char** argv) {
         app.names = new NameComponentManager(EntityManager::get());
         app.viewer = new ViewerGui(engine, scene, view, 410);
         app.viewer->getSettings().viewer.autoScaleEnabled = !app.actualSize;
+
+        engine->enableAccurateTranslations();
+        auto& tcm = engine->getTransformManager();
+        app.rootTransformEntity = engine->getEntityManager().create();
+        tcm.create(app.rootTransformEntity);
+        tcm.create(view->getFogEntity());
 
         const bool batchMode = !app.batchFile.empty();
 
@@ -597,12 +776,15 @@ int main(int argc, char** argv) {
             options.sleepDuration = 0.0;
             options.exportScreenshots = true;
             options.exportSettings = true;
+            options.exportFormat = app.screenshotAsPPM
+                                           ? AutomationEngine::Options::ExportFormat::PPM
+                                           : AutomationEngine::Options::ExportFormat::TIFF;
             app.automationEngine->setOptions(options);
             app.viewer->stopAnimation();
         }
 
-        if (app.settingsFile.size() > 0) {
-            bool success = loadSettings(app.settingsFile.c_str(), &app.viewer->getSettings());
+        if (!app.settingsFile.empty()) {
+            bool const success = loadSettings(app.settingsFile.c_str(), &app.viewer->getSettings());
             if (success) {
                 std::cout << "Loaded settings from " << app.settingsFile << std::endl;
             } else {
@@ -610,7 +792,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        app.materials = (app.materialSource == JITSHADER) ? createJitShaderProvider(engine) :
+        app.materials = (app.materialSource == JITSHADER) ?
+                createJitShaderProvider(engine, OPTIMIZE_MATERIALS) :
                 createUbershaderProvider(engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
         app.assetLoader = AssetLoader::create({engine, app.materials, app.names });
@@ -651,7 +834,7 @@ int main(int argc, char** argv) {
                 ImGui::Spacing();
             }
 
-            float progress = app.resourceLoader->asyncGetLoadProgress();
+            float const progress = app.resourceLoader->asyncGetLoadProgress();
             if (progress < 1.0) {
                 ImGui::ProgressBar(progress);
             } else {
@@ -698,7 +881,7 @@ int main(int argc, char** argv) {
                 }
 
                 if (ImGui::Button("Export view settings")) {
-                    automation.exportSettings(app.viewer->getSettings(), "settings.json");
+                    AutomationEngine::exportSettings(app.viewer->getSettings(), "settings.json");
                     app.messageBoxText = automation.getStatusMessage();
                     ImGui::OpenPopup("MessageBox");
                 }
@@ -715,13 +898,69 @@ int main(int argc, char** argv) {
 
             if (ImGui::CollapsingHeader("Debug")) {
                 auto& debug = engine->getDebugRegistry();
-                if (ImGui::Button("Capture frame")) {
-                    bool* captureFrame =
-                        debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
-                    *captureFrame = true;
+                if (engine->getBackend() == Engine::Backend::METAL) {
+                    if (ImGui::Button("Capture frame")) {
+                        bool* captureFrame =
+                                debug.getPropertyAddress<bool>("d.renderer.doFrameCapture");
+                        *captureFrame = true;
+                    }
                 }
-                ImGui::Checkbox("Disable buffer padding", debug.getPropertyAddress<bool>("d.renderer.disable_buffer_padding"));
-                ImGui::Checkbox("Camera at origin", debug.getPropertyAddress<bool>("d.view.camera_at_origin"));
+                if (ImGui::Button("Screenshot")) {
+                    app.screenshot = true;
+                }
+                ImGui::Checkbox("Disable buffer padding",
+                        debug.getPropertyAddress<bool>("d.renderer.disable_buffer_padding"));
+                ImGui::Checkbox("Disable sub-passes",
+                        debug.getPropertyAddress<bool>("d.renderer.disable_subpasses"));
+                ImGui::Checkbox("Camera at origin",
+                        debug.getPropertyAddress<bool>("d.view.camera_at_origin"));
+                ImGui::Checkbox("Far Origin", &app.originIsFarAway);
+                ImGui::SliderFloat("Origin", &app.originDistance, 0, 1);
+                ImGui::Checkbox("Far uses shadow casters",
+                        debug.getPropertyAddress<bool>("d.shadowmap.far_uses_shadowcasters"));
+                ImGui::Checkbox("Focus shadow casters",
+                        debug.getPropertyAddress<bool>("d.shadowmap.focus_shadowcasters"));
+                ImGui::Checkbox("Disable light frustum alignment",
+                        debug.getPropertyAddress<bool>("d.shadowmap.disable_light_frustum_align"));
+                ImGui::Checkbox("Depth clamp",
+                        debug.getPropertyAddress<bool>("d.shadowmap.depth_clamp"));
+
+                bool debugDirectionalShadowmap;
+                if (debug.getProperty("d.shadowmap.debug_directional_shadowmap",
+                        &debugDirectionalShadowmap)) {
+                    ImGui::Checkbox("Debug DIR shadowmap", &debugDirectionalShadowmap);
+                    debug.setProperty("d.shadowmap.debug_directional_shadowmap",
+                            debugDirectionalShadowmap);
+                }
+
+                ImGui::Checkbox("Display Shadow Texture",
+                        debug.getPropertyAddress<bool>("d.shadowmap.display_shadow_texture"));
+                if (*debug.getPropertyAddress<bool>("d.shadowmap.display_shadow_texture")) {
+                    int layerCount;
+                    int levelCount;
+                    debug.getProperty("d.shadowmap.display_shadow_texture_layer_count", &layerCount);
+                    debug.getProperty("d.shadowmap.display_shadow_texture_level_count", &levelCount);
+                    ImGui::Indent();
+                    ImGui::SliderFloat("scale", debug.getPropertyAddress<float>(
+                                    "d.shadowmap.display_shadow_texture_scale"), 0.0f, 8.0f);
+                    ImGui::SliderFloat("contrast", debug.getPropertyAddress<float>(
+                                    "d.shadowmap.display_shadow_texture_power"), 0.0f, 2.0f);
+                    ImGui::SliderInt("layer", debug.getPropertyAddress<int>(
+                                    "d.shadowmap.display_shadow_texture_layer"), 0, layerCount - 1);
+                    ImGui::SliderInt("level", debug.getPropertyAddress<int>(
+                                    "d.shadowmap.display_shadow_texture_level"), 0, levelCount - 1);
+                    ImGui::SliderInt("channel", debug.getPropertyAddress<int>(
+                                    "d.shadowmap.display_shadow_texture_channel"), 0, 3);
+                    ImGui::Unindent();
+                }
+                bool debugFroxelVisualization;
+                if (debug.getProperty("d.lighting.debug_froxel_visualization",
+                        &debugFroxelVisualization)) {
+                    ImGui::Checkbox("Froxel Visualization", &debugFroxelVisualization);
+                    debug.setProperty("d.lighting.debug_froxel_visualization",
+                            debugFroxelVisualization);
+                }
+
                 auto dataSource = debug.getDataSource("d.view.frame_info");
                 if (dataSource.data) {
                     ImGuiExt::PlotLinesSeries("FrameInfo", 6,
@@ -774,7 +1013,7 @@ int main(int argc, char** argv) {
                 view->setStencilBufferEnabled(visualizeOverdraw);
             }
 
-            if (ImGui::BeginPopupModal("MessageBox", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (ImGui::BeginPopupModal("MessageBox", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::Text("%s", app.messageBoxText.c_str());
                 if (ImGui::Button("OK", ImVec2(120, 0))) {
                     ImGui::CloseCurrentPopup();
@@ -816,11 +1055,13 @@ int main(int argc, char** argv) {
         delete app.resourceLoader;
         delete app.stbDecoder;
         delete app.ktxDecoder;
+        delete app.automationSpec;
+        delete app.automationEngine;
 
         AssetLoader::destroy(&app.assetLoader);
     };
 
-    auto animate = [&app](Engine* engine, View* view, double now) {
+    auto animate = [&app](Engine*, View*, double now) {
         app.resourceLoader->asyncUpdateLoad();
 
         // Optionally fit the model into a unit cube at the origin.
@@ -832,7 +1073,7 @@ int main(int argc, char** argv) {
         app.viewer->applyAnimation(now);
     };
 
-    auto resize = [&app](Engine* engine, View* view) {
+    auto resize = [&app](Engine*, View* view) {
         Camera& camera = view->getCamera();
         if (&camera == app.mainCamera) {
             // Don't adjust the aspect ratio of the main camera, this is done inside of
@@ -840,11 +1081,11 @@ int main(int argc, char** argv) {
             return;
         }
         const Viewport& vp = view->getViewport();
-        double aspectRatio = (double) vp.width / vp.height;
+        double const aspectRatio = (double) vp.width / vp.height;
         camera.setScaling({1.0 / aspectRatio, 1.0 });
     };
 
-    auto gui = [&app](Engine* engine, View* view) {
+    auto gui = [&app](Engine*, View*) {
         app.viewer->updateUserInterface();
 
         FilamentApp::get().setSidebarWidth(app.viewer->getSidebarWidth());
@@ -854,7 +1095,6 @@ int main(int argc, char** argv) {
         auto& rcm = engine->getRenderableManager();
         auto instance = rcm.getInstance(app.scene.groundPlane);
         const auto viewerOptions = app.automationEngine->getViewerOptions();
-        const auto& dofOptions = app.viewer->getSettings().view.dof;
         rcm.setLayerMask(instance,
                 0xff, viewerOptions.groundPlaneEnabled ? 0xff : 0x00);
 
@@ -862,7 +1102,8 @@ int main(int argc, char** argv) {
 
         // Note that this focal length might be different from the slider value because the
         // automation engine applies Camera::computeEffectiveFocalLength when DoF is enabled.
-        FilamentApp::get().getCameraFocalLength() = viewerOptions.cameraFocalLength;
+        FilamentApp::get().setCameraFocalLength(viewerOptions.cameraFocalLength);
+        FilamentApp::get().setCameraNearFar(viewerOptions.cameraNear, viewerOptions.cameraFar);
 
         const size_t cameraCount = app.asset->getCameraEntityCount();
         view->setCamera(app.mainCamera);
@@ -877,8 +1118,15 @@ int main(int argc, char** argv) {
             // Override the aspect ratio in the glTF file and adjust the aspect ratio of this
             // camera to the viewport.
             const Viewport& vp = view->getViewport();
-            double aspectRatio = (double) vp.width / vp.height;
+            double const aspectRatio = (double) vp.width / vp.height;
             camera->setScaling({1.0 / aspectRatio, 1.0});
+        }
+
+        static bool stereoscopicEnabled = false;
+        if (stereoscopicEnabled != view->getStereoscopicOptions().enabled) {
+            // Stereo was turned on/off.
+            FilamentApp::get().reconfigureCameras();
+            stereoscopicEnabled = view->getStereoscopicOptions().enabled;
         }
 
         app.scene.groundMaterial->setDefaultParameter(
@@ -889,8 +1137,21 @@ int main(int argc, char** argv) {
         Skybox* skybox = scene->getSkybox();
         applySettings(engine, app.viewer->getSettings().viewer, &camera, skybox, renderer);
 
+        // technically we don't need to do this each frame
+        auto& tcm = engine->getTransformManager();
+        TransformManager::Instance const& root = tcm.getInstance(app.rootTransformEntity);
+        tcm.setParent(tcm.getInstance(camera.getEntity()), root);
+        tcm.setParent(tcm.getInstance(app.asset->getRoot()), root);
+        tcm.setParent(tcm.getInstance(view->getFogEntity()), root);
+
+        // these values represent a point somewhere on Earth's surface
+        float const d = app.originIsFarAway ? app.originDistance : 0.0f;
+//        tcm.setTransform(root, mat4::translation(double3{ 67.0, -6366759.0, -21552.0 } * d));
+        tcm.setTransform(root, mat4::translation(
+                double3{ 2304097.1410110965, -4688442.9915525438, -3639452.5611694567 } * d));
+
         // Check if color grading has changed.
-        ColorGradingSettings& options = app.viewer->getSettings().view.colorGrading;
+        ColorGradingSettings const& options = app.viewer->getSettings().view.colorGrading;
         if (options.enabled) {
             if (options != app.lastColorGradingOptions) {
                 ColorGrading *colorGrading = createColorGrading(options, engine);
@@ -904,12 +1165,21 @@ int main(int argc, char** argv) {
         }
     };
 
-    auto postRender = [&app](Engine* engine, View* view, Scene* scene, Renderer* renderer) {
+    auto postRender = [&app](Engine* engine, View* view, Scene*, Renderer* renderer) {
+        if (app.screenshot) {
+            std::ostringstream stringStream;
+            stringStream << "screenshot" << std::setfill('0') << std::setw(2) << +app.screenshotSeq;
+            std::string const ext = app.screenshotAsPPM ? ".ppm" : ".tif";
+            AutomationEngine::exportScreenshot(
+                    view, renderer, stringStream.str() + ext, false, app.automationEngine);
+            ++app.screenshotSeq;
+            app.screenshot = false;
+        }
         if (app.automationEngine->shouldClose()) {
             FilamentApp::get().close();
             return;
         }
-        AutomationEngine::ViewerContent content = {
+        AutomationEngine::ViewerContent const content = {
             .view = view,
             .renderer = renderer,
             .materials = app.instance->getMaterialInstances(),
@@ -922,14 +1192,26 @@ int main(int argc, char** argv) {
     filamentApp.animate(animate);
     filamentApp.resize(resize);
 
-    filamentApp.setDropHandler([&] (std::string_view path) {
-        app.resourceLoader->asyncCancelLoad();
-        app.resourceLoader->evictResourceData();
-        app.viewer->removeAsset();
-        app.assetLoader->destroyAsset(app.asset);
-        loadAsset(path);
-        loadResources(path);
-        app.viewer->setAsset(app.asset, app.instance);
+    filamentApp.setDropHandler([&](std::string_view path) {
+        utils::Path filename = getPathForGLTFAsset(path);
+        if (!filename.isEmpty()) {
+            if (checkGLTFAsset(filename)) {
+                app.resourceLoader->asyncCancelLoad();
+                app.resourceLoader->evictResourceData();
+                app.viewer->removeAsset();
+                app.assetLoader->destroyAsset(app.asset);
+                loadAsset(filename);
+                loadResources(filename);
+                app.viewer->setAsset(app.asset, app.instance);
+            }
+            return;
+        }
+
+        filename = getPathForIBLAsset(path);
+        if (!filename.isEmpty()) {
+            FilamentApp::get().loadIBL(path);
+            setupIBL();
+        }
     });
 
     filamentApp.run(app.config, setup, cleanup, gui, preRender, postRender);
