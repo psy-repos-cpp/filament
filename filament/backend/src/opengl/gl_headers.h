@@ -17,55 +17,46 @@
 #ifndef TNT_FILAMENT_BACKEND_OPENGL_GL_HEADERS_H
 #define TNT_FILAMENT_BACKEND_OPENGL_GL_HEADERS_H
 
+/*
+ * Configuration we aim to support:
+ *
+ * GL 4.5 headers
+ *      - GL 4.1 runtime (for macOS)
+ *      - GL 4.5 runtime
+ *
+ * GLES 2.0 headers
+ *      - GLES 2.0 runtime Android only
+ *
+ * GLES 3.0 headers
+ *      - GLES 3.0 runtime iOS and WebGL2 only
+ *
+ * GLES 3.1 headers
+ *      - GLES 2.0 runtime
+ *      - GLES 3.0 runtime
+ *      - GLES 3.1 runtime
+ */
+
+
 #if defined(__ANDROID__) || defined(FILAMENT_USE_EXTERNAL_GLES3) || defined(__EMSCRIPTEN__)
 
     #if defined(__EMSCRIPTEN__)
     #   include <GLES3/gl3.h>
     #else
+//    #   include <GLES2/gl2.h>
     #   include <GLES3/gl31.h>
     #endif
     #include <GLES2/gl2ext.h>
 
-    /* The Android NDK doesn't expose extensions, fake it with eglGetProcAddress */
-    namespace glext {
-        // importGLESExtensionsEntryPoints is thread-safe and can be called multiple times.
-        // it is currently called from PlatformEGL.
-        void importGLESExtensionsEntryPoints();
+    // For development and debugging purpose only, we want to support compiling this backend
+    // with ES2 only headers, in this case (i.e. we have VERSION_2 but not VERSION_3+),
+    // we define FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2 with the purpose of compiling out
+    // code that cannot be compiled with ES2 headers. In production, this code is compiled in but
+    // is never executed thanks to runtime checks or asserts.
+    #if defined(GL_ES_VERSION_2_0) && !defined(GL_ES_VERSION_3_0)
+    #   define FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+    #endif
 
-#ifdef GL_QCOM_tiled_rendering
-        extern PFNGLSTARTTILINGQCOMPROC glStartTilingQCOM;
-        extern PFNGLENDTILINGQCOMPROC glEndTilingQCOM;
-#endif
-#ifdef GL_OES_EGL_image
-        extern PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
-#endif
-#ifdef GL_EXT_debug_marker
-        extern PFNGLINSERTEVENTMARKEREXTPROC glInsertEventMarkerEXT;
-        extern PFNGLPUSHGROUPMARKEREXTPROC glPushGroupMarkerEXT;
-        extern PFNGLPOPGROUPMARKEREXTPROC glPopGroupMarkerEXT;
-#endif
-#ifdef GL_EXT_multisampled_render_to_texture
-        extern PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC glRenderbufferStorageMultisampleEXT;
-        extern PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC glFramebufferTexture2DMultisampleEXT;
-#endif
-#ifdef GL_KHR_debug
-        extern PFNGLDEBUGMESSAGECALLBACKKHRPROC glDebugMessageCallbackKHR;
-        extern PFNGLGETDEBUGMESSAGELOGKHRPROC glGetDebugMessageLogKHR;
-#endif
-#ifdef GL_EXT_disjoint_timer_query
-        extern PFNGLGETQUERYOBJECTUI64VEXTPROC glGetQueryObjectui64v;
-#endif
-#ifdef GL_EXT_clip_control
-        extern PFNGLCLIPCONTROLEXTPROC glClipControl;
-#endif
-#if defined(__ANDROID__)
-        extern PFNGLDISPATCHCOMPUTEPROC glDispatchCompute;
-#endif
-    }
-
-    using namespace glext;
-
-#elif defined(IOS)
+#elif defined(FILAMENT_IOS)
 
     #define GLES_SILENCE_DEPRECATION
 
@@ -85,110 +76,192 @@
 
 #endif
 
-#if (!defined(GL_ES_VERSION_2_0) && !defined(GL_VERSION_4_1))
-#error "Minimum header version must be OpenGL ES 2.0 or OpenGL 4.1"
-#endif
+/* Validate the header configurations we aim to support */
 
+#if defined(GL_VERSION_4_5)
+#elif defined(GL_ES_VERSION_3_1)
+#elif defined(GL_ES_VERSION_3_0)
+#   if !defined(FILAMENT_IOS) && !defined(__EMSCRIPTEN__)
+#       error "GLES 3.0 headers only supported on iOS and WebGL2"
+#   endif
+#elif defined(GL_ES_VERSION_2_0)
+#   if !defined(__ANDROID__)
+#       error "GLES 2.0 headers only supported on Android"
+#   endif
+#else
+#   error "Minimum header version must be OpenGL ES 2.0 or OpenGL 4.5"
+#endif
 
 /*
- * Since we need ES3.1 headers and iOS only has ES3.0, we also define the constants we
- * need to avoid many #ifdef in the actual code.
+ * GLES extensions
  */
 
-#if defined(GL_ES_VERSION_2_0)
+#if defined(GL_ES_VERSION_2_0)  // this basically means all versions of GLES
 
-#ifdef GL_EXT_disjoint_timer_query
-#    ifndef GL_TIME_ELAPSED
-#        define GL_TIME_ELAPSED             GL_TIME_ELAPSED_EXT
-#    endif
+#if defined(FILAMENT_IOS)
+
+// iOS headers only provide prototypes, nothing to do.
+
+#else
+
+#define FILAMENT_IMPORT_ENTRY_POINTS
+
+/* The Android NDK doesn't expose extensions, fake it with eglGetProcAddress */
+namespace glext {
+// importGLESExtensionsEntryPoints is thread-safe and can be called multiple times.
+// it is currently called from PlatformEGL.
+void importGLESExtensionsEntryPoints();
+
+#ifndef __EMSCRIPTEN__
+#ifdef GL_OES_EGL_image
+extern PFNGLEGLIMAGETARGETTEXTURE2DOESPROC glEGLImageTargetTexture2DOES;
 #endif
-
+#ifdef GL_EXT_debug_marker
+extern PFNGLINSERTEVENTMARKEREXTPROC glInsertEventMarkerEXT;
+extern PFNGLPUSHGROUPMARKEREXTPROC glPushGroupMarkerEXT;
+extern PFNGLPOPGROUPMARKEREXTPROC glPopGroupMarkerEXT;
+#endif
+#ifdef GL_EXT_multisampled_render_to_texture
+extern PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC glRenderbufferStorageMultisampleEXT;
+extern PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC glFramebufferTexture2DMultisampleEXT;
+#endif
+#ifdef GL_KHR_debug
+extern PFNGLDEBUGMESSAGECALLBACKKHRPROC glDebugMessageCallbackKHR;
+extern PFNGLGETDEBUGMESSAGELOGKHRPROC glGetDebugMessageLogKHR;
+#endif
 #ifdef GL_EXT_clip_control
-#   ifndef GL_LOWER_LEFT
-#      define GL_LOWER_LEFT                 GL_LOWER_LEFT_EXT
-#   endif
-#   ifndef GL_ZERO_TO_ONE
-#      define GL_ZERO_TO_ONE                GL_ZERO_TO_ONE_EXT
-#   endif
+extern PFNGLCLIPCONTROLEXTPROC glClipControlEXT;
 #endif
+#ifdef GL_EXT_disjoint_timer_query
+extern PFNGLGENQUERIESEXTPROC glGenQueriesEXT;
+extern PFNGLDELETEQUERIESEXTPROC glDeleteQueriesEXT;
+extern PFNGLBEGINQUERYEXTPROC glBeginQueryEXT;
+extern PFNGLENDQUERYEXTPROC glEndQueryEXT;
+extern PFNGLGETQUERYOBJECTUIVEXTPROC glGetQueryObjectuivEXT;
+extern PFNGLGETQUERYOBJECTUI64VEXTPROC glGetQueryObjectui64vEXT;
+#endif
+#ifdef GL_OES_vertex_array_object
+extern PFNGLBINDVERTEXARRAYOESPROC glBindVertexArrayOES;
+extern PFNGLDELETEVERTEXARRAYSOESPROC glDeleteVertexArraysOES;
+extern PFNGLGENVERTEXARRAYSOESPROC glGenVertexArraysOES;
+#endif
+#ifdef GL_EXT_discard_framebuffer
+extern PFNGLDISCARDFRAMEBUFFEREXTPROC glDiscardFramebufferEXT;
+#endif
+#ifdef GL_KHR_parallel_shader_compile
+extern PFNGLMAXSHADERCOMPILERTHREADSKHRPROC glMaxShaderCompilerThreadsKHR;
+#endif
+#ifdef GL_OVR_multiview
+extern PFNGLFRAMEBUFFERTEXTUREMULTIVIEWOVRPROC glFramebufferTextureMultiviewOVR;
+#endif
+#if defined(__ANDROID__) && !defined(FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2)
+extern PFNGLDISPATCHCOMPUTEPROC glDispatchCompute;
+#endif
+#endif // __EMSCRIPTEN__
+} // namespace glext
 
-#ifndef GL_TEXTURE_CUBE_MAP_ARRAY
-#   define GL_TEXTURE_CUBE_MAP_ARRAY        0x9009
+using namespace glext;
+
 #endif
 
 // Prevent lots of #ifdef's between desktop and mobile
 
+#ifdef GL_EXT_disjoint_timer_query
+#   define GL_TIME_ELAPSED                          GL_TIME_ELAPSED_EXT
+#   ifndef GL_ES_VERSION_3_0
+#       define GL_QUERY_RESULT_AVAILABLE            GL_QUERY_RESULT_AVAILABLE_EXT
+#       define GL_QUERY_RESULT                      GL_QUERY_RESULT_EXT
+#   endif
+#endif
+
+#ifdef GL_EXT_clip_control
+#   define GL_LOWER_LEFT                            GL_LOWER_LEFT_EXT
+#   define GL_ZERO_TO_ONE                           GL_ZERO_TO_ONE_EXT
+#endif
+
+#ifdef GL_KHR_parallel_shader_compile
+#   define GL_COMPLETION_STATUS                     GL_COMPLETION_STATUS_KHR
+#else
+#   define GL_COMPLETION_STATUS                     0x91B1
+#endif
+
+// we need GL_TEXTURE_CUBE_MAP_ARRAY defined, but we won't use it if the extension/feature
+// is not available.
+#if defined(GL_EXT_texture_cube_map_array)
+#   define GL_TEXTURE_CUBE_MAP_ARRAY                GL_TEXTURE_CUBE_MAP_ARRAY_EXT
+#else
+#   define GL_TEXTURE_CUBE_MAP_ARRAY                0x9009
+#endif
+
+#if defined(GL_EXT_clip_cull_distance)
+#   define GL_CLIP_DISTANCE0                        GL_CLIP_DISTANCE0_EXT
+#   define GL_CLIP_DISTANCE1                        GL_CLIP_DISTANCE1_EXT
+#else
+#   define GL_CLIP_DISTANCE0                        0x3000
+#   define GL_CLIP_DISTANCE1                        0x3001
+#endif
+
+#if defined(GL_EXT_depth_clamp)
+#   define GL_DEPTH_CLAMP                           GL_DEPTH_CLAMP_EXT
+#else
+#   define GL_DEPTH_CLAMP                           0x864F
+#endif
+
 #if defined(GL_KHR_debug)
-#   ifndef GL_DEBUG_OUTPUT
-#      define GL_DEBUG_OUTPUT                   GL_DEBUG_OUTPUT_KHR
-#   endif
-#   ifndef GL_DEBUG_OUTPUT_SYNCHRONOUS
-#      define GL_DEBUG_OUTPUT_SYNCHRONOUS       GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR
-#   endif
-
-#   ifndef GL_DEBUG_SEVERITY_HIGH
-#      define GL_DEBUG_SEVERITY_HIGH            GL_DEBUG_SEVERITY_HIGH_KHR
-#   endif
-#   ifndef GL_DEBUG_SEVERITY_MEDIUM
-#      define GL_DEBUG_SEVERITY_MEDIUM          GL_DEBUG_SEVERITY_MEDIUM_KHR
-#   endif
-#   ifndef GL_DEBUG_SEVERITY_LOW
-#      define GL_DEBUG_SEVERITY_LOW             GL_DEBUG_SEVERITY_LOW_KHR
-#   endif
-#   ifndef GL_DEBUG_SEVERITY_NOTIFICATION
-#      define GL_DEBUG_SEVERITY_NOTIFICATION    GL_DEBUG_SEVERITY_NOTIFICATION_KHR
-#   endif
-
-#   ifndef GL_DEBUG_TYPE_MARKER
-#      define GL_DEBUG_TYPE_MARKER              GL_DEBUG_TYPE_MARKER_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_ERROR
-#      define GL_DEBUG_TYPE_ERROR               GL_DEBUG_TYPE_ERROR_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR
-#      define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR
-#      define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR  GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_PORTABILITY
-#      define GL_DEBUG_TYPE_PORTABILITY         GL_DEBUG_TYPE_PORTABILITY_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_PERFORMANCE
-#      define GL_DEBUG_TYPE_PERFORMANCE         GL_DEBUG_TYPE_PERFORMANCE_KHR
-#   endif
-#   ifndef GL_DEBUG_TYPE_OTHER
-#      define GL_DEBUG_TYPE_OTHER               GL_DEBUG_TYPE_OTHER_KHR
-#   endif
-
-#   define glDebugMessageCallback            glDebugMessageCallbackKHR
+#   define GL_DEBUG_OUTPUT                          GL_DEBUG_OUTPUT_KHR
+#   define GL_DEBUG_OUTPUT_SYNCHRONOUS              GL_DEBUG_OUTPUT_SYNCHRONOUS_KHR
+#   define GL_DEBUG_SEVERITY_HIGH                   GL_DEBUG_SEVERITY_HIGH_KHR
+#   define GL_DEBUG_SEVERITY_MEDIUM                 GL_DEBUG_SEVERITY_MEDIUM_KHR
+#   define GL_DEBUG_SEVERITY_LOW                    GL_DEBUG_SEVERITY_LOW_KHR
+#   define GL_DEBUG_SEVERITY_NOTIFICATION           GL_DEBUG_SEVERITY_NOTIFICATION_KHR
+#   define GL_DEBUG_TYPE_MARKER                     GL_DEBUG_TYPE_MARKER_KHR
+#   define GL_DEBUG_TYPE_ERROR                      GL_DEBUG_TYPE_ERROR_KHR
+#   define GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR        GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_KHR
+#   define GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR         GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_KHR
+#   define GL_DEBUG_TYPE_PORTABILITY                GL_DEBUG_TYPE_PORTABILITY_KHR
+#   define GL_DEBUG_TYPE_PERFORMANCE                GL_DEBUG_TYPE_PERFORMANCE_KHR
+#   define GL_DEBUG_TYPE_OTHER                      GL_DEBUG_TYPE_OTHER_KHR
+#   define glDebugMessageCallback                   glDebugMessageCallbackKHR
 #endif
 
-/* The iOS SDK only provides OpenGL ES headers up to 3.0. Filament works with OpenGL 3.0, but
- * requires ES3.1 headers */
-#if !defined(GL_ES_VERSION_3_1)
-    #define GL_SHADER_STORAGE_BUFFER                0x90D2
-    #define GL_COMPUTE_SHADER                       0x91B9
-
-    #define GL_TEXTURE_2D_MULTISAMPLE               0x9100
-
-// FIXME: The GL_TIME_ELAPSED define is used unconditionally in Filament, but
-// requires extension support.
-#ifndef GL_TIME_ELAPSED
-    #define GL_TIME_ELAPSED                         0x88BF
+// token that exist in ES3 core but are extensions (mandatory or not) in ES2
+#ifndef GL_ES_VERSION_3_0
+#   ifdef GL_OES_vertex_array_object
+#       define GL_VERTEX_ARRAY_BINDING             GL_VERTEX_ARRAY_BINDING_OES
+#   endif
+#   ifdef GL_OES_rgb8_rgba8
+#       define GL_RGB8                             0x8051
+#       define GL_RGBA8                            0x8058
+#   endif
+#   ifdef GL_OES_depth24
+#       define GL_DEPTH_COMPONENT24                GL_DEPTH_COMPONENT24_OES
+#   endif
+#   ifdef GL_EXT_discard_framebuffer
+#       define GL_COLOR                             GL_COLOR_EXT
+#       define GL_DEPTH                             GL_DEPTH_EXT
+#       define GL_STENCIL                           GL_STENCIL_EXT
+#   endif
+#   ifdef GL_OES_packed_depth_stencil
+#       define GL_DEPTH_STENCIL                     GL_DEPTH_STENCIL_OES
+#       define GL_UNSIGNED_INT_24_8                 GL_UNSIGNED_INT_24_8_OES
+#       define GL_DEPTH24_STENCIL8                  GL_DEPTH24_STENCIL8_OES
+#   endif
 #endif
 
-    #define GL_TEXTURE_BINDING_CUBE_MAP_ARRAY       0x900A
-    #define GL_SAMPLER_CUBE_MAP_ARRAY               0x900C
-    #define GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW        0x900D
-    #define GL_INT_SAMPLER_CUBE_MAP_ARRAY           0x900E
-    #define GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY  0x900F
-    #define GL_IMAGE_CUBE_MAP_ARRAY                 0x9054
-    #define GL_INT_IMAGE_CUBE_MAP_ARRAY             0x905F
-    #define GL_UNSIGNED_INT_IMAGE_CUBE_MAP_ARRAY    0x906A
+#else // All version OpenGL below
 
+#ifdef GL_ARB_parallel_shader_compile
+#   define GL_COMPLETION_STATUS                     GL_COMPLETION_STATUS_ARB
+#else
+#   define GL_COMPLETION_STATUS                     0x91B1
 #endif
+
 #endif // GL_ES_VERSION_2_0
+
+// This is just to simplify the implementation (i.e. so we don't have to have #ifdefs everywhere)
+#ifndef GL_OES_EGL_image_external
+#define GL_TEXTURE_EXTERNAL_OES           0x8D65
+#endif
 
 // This is an odd duck function that exists in WebGL 2.0 but not in OpenGL ES.
 #if defined(__EMSCRIPTEN__)
@@ -197,34 +270,39 @@ void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void *d
 }
 #endif
 
+#ifdef GL_ES_VERSION_2_0
+#   ifndef FILAMENT_IOS
+#      ifndef GL_OES_vertex_array_object
+#          error "Headers with GL_OES_vertex_array_object are mandatory unless on iOS"
+#      endif
+#      ifndef GL_EXT_disjoint_timer_query
+#          error "Headers with GL_EXT_disjoint_timer_query are mandatory unless on iOS"
+#      endif
+#      ifndef GL_OES_rgb8_rgba8
+#          error "Headers with GL_OES_rgb8_rgba8 are mandatory unless on iOS"
+#      endif
+#   endif
+#endif
 
-#define BACKEND_OPENGL_VERSION_GLES     0
-#define BACKEND_OPENGL_VERSION_GL       1
 #if defined(GL_ES_VERSION_2_0)
-#   define BACKEND_OPENGL_VERSION      BACKEND_OPENGL_VERSION_GLES
-#elif defined(GL_VERSION_4_1)
-#   define BACKEND_OPENGL_VERSION      BACKEND_OPENGL_VERSION_GL
+#   define BACKEND_OPENGL_VERSION_GLES
+#elif defined(GL_VERSION_4_5)
+#   define BACKEND_OPENGL_VERSION_GL
+#else
+#   error "Unsupported header version"
 #endif
 
-#define BACKEND_OPENGL_LEVEL_GLES20     0
-#define BACKEND_OPENGL_LEVEL_GLES30     1
-#define BACKEND_OPENGL_LEVEL_GLES31     2
-
-#if defined(GL_VERSION_4_1)
-#   define BACKEND_OPENGL_LEVEL        BACKEND_OPENGL_LEVEL_GLES30
+#if defined(GL_VERSION_4_5) || defined(GL_ES_VERSION_3_1)
+#   define BACKEND_OPENGL_LEVEL_GLES31
+#   ifdef __EMSCRIPTEN__
+#       error "__EMSCRIPTEN__ shouldn't be defined with GLES 3.1 headers"
+#   endif
 #endif
-
-#if defined(GL_ES_VERSION_3_1)
-#   define BACKEND_OPENGL_LEVEL        BACKEND_OPENGL_LEVEL_GLES31
-#elif defined(GL_ES_VERSION_3_0)
-#   define BACKEND_OPENGL_LEVEL        BACKEND_OPENGL_LEVEL_GLES30
-#elif defined(GL_ES_VERSION_2_0)
-#   define BACKEND_OPENGL_LEVEL        BACKEND_OPENGL_LEVEL_GLES20
+#if defined(GL_VERSION_4_5) || defined(GL_ES_VERSION_3_0)
+#   define BACKEND_OPENGL_LEVEL_GLES30
 #endif
-
-// This is just to simplify the implementation (i.e. so we don't have to have #ifdefs everywhere)
-#ifndef GL_OES_EGL_image_external
-#define GL_TEXTURE_EXTERNAL_OES           0x8D65
+#if defined(GL_VERSION_4_5) || defined(GL_ES_VERSION_2_0)
+#   define BACKEND_OPENGL_LEVEL_GLES20
 #endif
 
 #include "NullGLES.h"

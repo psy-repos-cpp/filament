@@ -19,8 +19,8 @@
 #include <Wingdi.h>
 
 #ifdef _MSC_VER
-    // this variable is checked in BlueGL.h (included from "gl_headers.h" right after this), 
-    // and prevents duplicate definition of OpenGL apis when building this file. 
+    // this variable is checked in BlueGL.h (included from "gl_headers.h" right after this),
+    // and prevents duplicate definition of OpenGL apis when building this file.
     // However, GL_GLEXT_PROTOTYPES need to be defined in BlueGL.h when included from other files.
     #define FILAMENT_PLATFORM_WGL
 #endif
@@ -37,9 +37,8 @@
 
 namespace {
 
-void reportLastWindowsError() {
+void reportWindowsError(DWORD dwError) {
     LPSTR lpMessageBuffer = nullptr;
-    DWORD dwError = GetLastError();
 
     if (dwError == 0) {
         return;
@@ -74,11 +73,13 @@ struct WGLSwapChain {
     bool isHeadless = false;
 };
 
+static PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribs = nullptr;
+
 Driver* PlatformWGL::createDriver(void* const sharedGLContext,
         const Platform::DriverConfig& driverConfig) noexcept {
     int result = 0;
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribs = nullptr;
     int pixelFormat = 0;
+    DWORD dwError = 0;
 
     mPfd = {
         sizeof(PIXELFORMATDESCRIPTOR),
@@ -99,17 +100,12 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext,
         0, 0, 0
     };
 
-    int attribs[] = {
-        WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
-        WGL_CONTEXT_MINOR_VERSION_ARB, 1,
-        0
-    };
-
     HGLRC tempContext = NULL;
 
     mHWnd = CreateWindowA("STATIC", "dummy", 0, 0, 0, 1, 1, NULL, NULL, NULL, NULL);
     HDC whdc = mWhdc = GetDC(mHWnd);
     if (whdc == NULL) {
+        dwError = GetLastError();
         utils::slog.e << "CreateWindowA() failed" << utils::io::endl;
         goto error;
     }
@@ -120,6 +116,7 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext,
     // We need a tmp context to retrieve and call wglCreateContextAttribsARB.
     tempContext = wglCreateContext(whdc);
     if (!wglMakeCurrent(whdc, tempContext)) {
+        dwError = GetLastError();
         utils::slog.e << "wglMakeCurrent() failed, whdc=" << whdc << ", tempContext=" <<
                 tempContext << utils::io::endl;
         goto error;
@@ -127,7 +124,23 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext,
 
     wglCreateContextAttribs =
             (PFNWGLCREATECONTEXTATTRIBSARBPROC) wglGetProcAddress("wglCreateContextAttribsARB");
-    mContext = wglCreateContextAttribs(whdc, (HGLRC) sharedGLContext, attribs);
+
+    // try all versions down, from GL 4.5 to 4.1
+
+
+    for (int minor = 5; minor >= 1; minor--) {
+        mAttribs = {
+                WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
+                WGL_CONTEXT_MINOR_VERSION_ARB, minor,
+                0
+        };
+        mContext = wglCreateContextAttribs(whdc, (HGLRC)sharedGLContext, mAttribs.data());
+        if (mContext) {
+            break;
+        }
+        dwError = GetLastError();
+    }
+
     if (!mContext) {
         utils::slog.e << "wglCreateContextAttribs() failed, whdc=" << whdc << utils::io::endl;
         goto error;
@@ -138,13 +151,14 @@ Driver* PlatformWGL::createDriver(void* const sharedGLContext,
     tempContext = NULL;
 
     if (!wglMakeCurrent(whdc, mContext)) {
+        dwError = GetLastError();
         utils::slog.e << "wglMakeCurrent() failed, whdc=" << whdc << ", mContext=" <<
                 mContext << utils::io::endl;
         goto error;
     }
 
     result = bluegl::bind();
-    ASSERT_POSTCONDITION(!result, "Unable to load OpenGL entry points.");
+    FILAMENT_CHECK_POSTCONDITION(!result) << "Unable to load OpenGL entry points.";
 
     return OpenGLPlatform::createDefaultDriver(this, sharedGLContext, driverConfig);
 
@@ -152,9 +166,19 @@ error:
     if (tempContext) {
         wglDeleteContext(tempContext);
     }
-    reportLastWindowsError();
+    reportWindowsError(dwError);
     terminate();
     return NULL;
+}
+
+bool PlatformWGL::isExtraContextSupported() const noexcept {
+    return false;
+}
+
+void PlatformWGL::createContext(bool shared) {
+    HGLRC context = wglCreateContextAttribs(mWhdc, shared ? mContext : nullptr, mAttribs.data());
+    wglMakeCurrent(mWhdc, context);
+    mAdditionalContexts.push_back(context);
 }
 
 void PlatformWGL::terminate() noexcept {
@@ -162,6 +186,9 @@ void PlatformWGL::terminate() noexcept {
     if (mContext) {
         wglDeleteContext(mContext);
         mContext = NULL;
+    }
+    for (auto& context : mAdditionalContexts) {
+        wglDeleteContext(mContext);
     }
     if (mHWnd && mWhdc) {
         ReleaseDC(mHWnd, mWhdc);
@@ -182,9 +209,11 @@ Platform::SwapChain* PlatformWGL::createSwapChain(void* nativeWindow, uint64_t f
     // on Windows, the nativeWindow maps to a HWND
     swapChain->hWnd = (HWND) nativeWindow;
     swapChain->hDc = GetDC(swapChain->hWnd);
-    if (!ASSERT_POSTCONDITION_NON_FATAL(swapChain->hDc,
-            "Unable to create the SwapChain (nativeWindow = %p)", nativeWindow)) {
-        reportLastWindowsError();
+    if (!swapChain->hDc) {
+        DWORD dwError = GetLastError();
+        ASSERT_POSTCONDITION_NON_FATAL(swapChain->hDc,
+           "Unable to create the SwapChain (nativeWindow = %p)", nativeWindow);
+        reportWindowsError(dwError);
     }
 
 	// We have to match pixel formats across the HDC and HGLRC (mContext)
@@ -232,8 +261,8 @@ void PlatformWGL::destroySwapChain(Platform::SwapChain* swapChain) noexcept {
     wglMakeCurrent(mWhdc, mContext);
 }
 
-void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
-                              Platform::SwapChain* readSwapChain) noexcept {
+bool PlatformWGL::makeCurrent(ContextType type, SwapChain* drawSwapChain,
+        SwapChain* readSwapChain) noexcept {
     ASSERT_PRECONDITION_NON_FATAL(drawSwapChain == readSwapChain,
                                   "PlatformWGL does not support distinct draw/read swap chains.");
 
@@ -241,11 +270,14 @@ void PlatformWGL::makeCurrent(Platform::SwapChain* drawSwapChain,
     HDC hdc = wglSwapChain->hDc;
     if (hdc != NULL) {
         BOOL success = wglMakeCurrent(hdc, mContext);
-        if (!ASSERT_POSTCONDITION_NON_FATAL(success, "wglMakeCurrent() failed. hdc = %p", hdc)) {
-            reportLastWindowsError();
+        if (!success) {
+            DWORD dwError = GetLastError();
+            ASSERT_POSTCONDITION_NON_FATAL(success, "wglMakeCurrent() failed. hdc = %p", hdc);
+            reportWindowsError(dwError);
             wglMakeCurrent(0, NULL);
         }
     }
+    return true;
 }
 
 void PlatformWGL::commit(Platform::SwapChain* swapChain) noexcept {

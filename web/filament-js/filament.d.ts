@@ -170,6 +170,8 @@ export class MaterialInstance {
     public setFloat2Parameter(name: string, value: float2): void;
     public setFloat3Parameter(name: string, value: float3): void;
     public setFloat4Parameter(name: string, value: float4): void;
+    public setMat3Parameter(name: string, value: mat4): void;
+    public setMat4Parameter(name: string, value: mat3): void;
     public setTextureParameter(name: string, value: Texture, sampler: TextureSampler): void;
     public setColor3Parameter(name: string, ctype: RgbType, value: float3): void;
     public setColor4Parameter(name: string, ctype: RgbaType, value: float4): void;
@@ -181,6 +183,7 @@ export class MaterialInstance {
     public setDepthWrite(enable: boolean): void;
     public setStencilWrite(enable: boolean): void;
     public setDepthCulling(enable: boolean): void;
+    public setDepthFunc(func: CompareFunc): void;
     public setStencilCompareFunction(func: CompareFunc, face?: StencilFace): void;
     public setStencilOpStencilFail(op: StencilOperation, face?: StencilFace): void;
     public setStencilOpDepthFail(op: StencilOperation, face?: StencilFace): void;
@@ -502,6 +505,7 @@ export class View {
     public setFogOptions(options: View$FogOptions): void;
     public setVignetteOptions(options: View$VignetteOptions): void;
     public setGuardBandOptions(options: View$GuardBandOptions): void;
+    public setStereoscopicOptions(options: View$StereoscopicOptions): void;
     public setAmbientOcclusion(ambientOcclusion: View$AmbientOcclusion): void;
     public getAmbientOcclusion(): View$AmbientOcclusion;
     public setBlendMode(mode: View$BlendMode): void;
@@ -510,6 +514,8 @@ export class View {
     public setAntiAliasing(antialiasing: View$AntiAliasing): void;
     public setStencilBufferEnabled(enabled: boolean): void;
     public isStencilBufferEnabled(): boolean;
+    public setTransparentPickingEnabled(enabled: boolean): void;
+    public isTransparentPickingEnabled(): boolean;
 }
 
 export class TransformManager {
@@ -542,6 +548,8 @@ export class Engine {
     public createSwapChain(): SwapChain;
     public createTextureFromJpeg(urlOrBuffer: BufferReference, options?: object): Texture;
     public createTextureFromPng(urlOrBuffer: BufferReference, options?: object): Texture;
+
+    public static getMaxStereoscopicEyes(): number;
 
     public createIblFromKtx1(urlOrBuffer: BufferReference): IndirectLight;
     public createSkyFromKtx1(urlOrBuffer: BufferReference): Skybox;
@@ -1204,8 +1212,6 @@ export enum View$BloomOptions$BlendMode {
  * blendMode:   Whether the bloom effect is purely additive (false) or mixed with the original
  *              image (true).
  *
- * anamorphism: Bloom's aspect ratio (x/y), for artistic purposes.
- *
  * threshold:   When enabled, a threshold at 1.0 is applied on the source image, this is
  *              useful for artistic reasons and is usually needed when a dirt texture is used.
  *
@@ -1227,11 +1233,7 @@ export interface View$BloomOptions {
      */
     resolution?: number;
     /**
-     * bloom x/y aspect-ratio (1/32 to 32)
-     */
-    anamorphism?: number;
-    /**
-     * number of blur levels (3 to 11)
+     * number of blur levels (1 to 11)
      */
     levels?: number;
     /**
@@ -1250,6 +1252,16 @@ export interface View$BloomOptions {
      * limit highlights to this value before bloom [10, +inf]
      */
     highlight?: number;
+    /**
+     * Bloom quality level.
+     * LOW (default): use a more optimized down-sampling filter, however there can be artifacts
+     *      with dynamic resolution, this can be alleviated by using the homogenous mode.
+     * MEDIUM: Good balance between quality and performance.
+     * HIGH: In this mode the bloom resolution is automatically increased to avoid artifacts.
+     *      This mode can be significantly slower on mobile, especially at high resolution.
+     *      This mode greatly improves the anamorphic bloom.
+     */
+    quality?: View$QualityLevel;
     /**
      * enable screen-space lens flare
      */
@@ -1289,47 +1301,92 @@ export interface View$BloomOptions {
 }
 
 /**
- * Options to control fog in the scene
+ * Options to control large-scale fog in the scene
  */
 export interface View$FogOptions {
     /**
-     * distance in world units from the camera where the fog starts ( >= 0.0 )
+     * Distance in world units [m] from the camera to where the fog starts ( >= 0.0 )
      */
     distance?: number;
+    /**
+     * Distance in world units [m] after which the fog calculation is disabled.
+     * This can be used to exclude the skybox, which is desirable if it already contains clouds or
+     * fog. The default value is +infinity which applies the fog to everything.
+     *
+     * Note: The SkyBox is typically at a distance of 1e19 in world space (depending on the near
+     * plane distance and projection used though).
+     */
+    cutOffDistance?: number;
     /**
      * fog's maximum opacity between 0 and 1
      */
     maximumOpacity?: number;
     /**
-     * fog's floor in world units
+     * Fog's floor in world units [m]. This sets the "sea level".
      */
     height?: number;
     /**
-     * how fast fog dissipates with altitude
+     * How fast the fog dissipates with altitude. heightFalloff has a unit of [1/m].
+     * It can be expressed as 1/H, where H is the altitude change in world units [m] that causes a
+     * factor 2.78 (e) change in fog density.
+     *
+     * A falloff of 0 means the fog density is constant everywhere and may result is slightly
+     * faster computations.
      */
     heightFalloff?: number;
     /**
-     * fog's color (linear), see fogColorFromIbl
+     *  Fog's color is used for ambient light in-scattering, a good value is
+     *  to use the average of the ambient light, possibly tinted towards blue
+     *  for outdoors environments. Color component's values should be between 0 and 1, values
+     *  above one are allowed but could create a non energy-conservative fog (this is dependant
+     *  on the IBL's intensity as well).
+     *
+     *  We assume that our fog has no absorption and therefore all the light it scatters out
+     *  becomes ambient light in-scattering and has lost all directionality, i.e.: scattering is
+     *  isotropic. This somewhat simulates Rayleigh scattering.
+     *
+     *  This value is used as a tint instead, when fogColorFromIbl is enabled.
+     *
+     *  @see fogColorFromIbl
      */
     color?: float3;
     /**
-     * fog's density at altitude given by 'height'
+     * Extinction factor in [1/m] at altitude 'height'. The extinction factor controls how much
+     * light is absorbed and out-scattered per unit of distance. Each unit of extinction reduces
+     * the incoming light to 37% of its original value.
+     *
+     * Note: The extinction factor is related to the fog density, it's usually some constant K times
+     * the density at sea level (more specifically at fog height). The constant K depends on
+     * the composition of the fog/atmosphere.
+     *
+     * For historical reason this parameter is called `density`.
      */
     density?: number;
     /**
-     * distance in world units from the camera where in-scattering starts
+     * Distance in world units [m] from the camera where the Sun in-scattering starts.
      */
     inScatteringStart?: number;
     /**
-     * size of in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
+     * Very inaccurately simulates the Sun's in-scattering. That is, the light from the sun that
+     * is scattered (by the fog) towards the camera.
+     * Size of the Sun in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
+     * Smaller values result is a larger scattering size.
      */
     inScatteringSize?: number;
     /**
-     * Fog color will be modulated by the IBL color in the view direction.
+     * The fog color will be sampled from the IBL in the view direction and tinted by `color`.
+     * Depending on the scene this can produce very convincing results.
+     *
+     * This simulates a more anisotropic phase-function.
+     *
+     * `fogColorFromIbl` is ignored when skyTexture is specified.
+     *
+     * @see skyColor
      */
     fogColorFromIbl?: boolean;
+    // JavaScript binding for skyColor is not yet supported, must use default value.
     /**
-     * enable or disable fog
+     * Enable or disable large-scale fog
      */
     enabled?: boolean;
 }
@@ -1354,6 +1411,10 @@ export interface View$DepthOfFieldOptions {
      * circle of confusion scale factor (amount of blur)
      */
     cocScale?: number;
+    /**
+     * width/height aspect ratio of the circle of confusion (simulate anamorphic lenses)
+     */
+    cocAspectRatio?: number;
     /**
      * maximum aperture diameter in meters (zero to disable rotation)
      */
@@ -1559,7 +1620,7 @@ export interface View$AmbientOcclusionOptions {
 }
 
 /**
- * Options for Temporal Multi-Sample Anti-aliasing (MSAA)
+ * Options for Multi-Sample Anti-aliasing (MSAA)
  * @see setMultiSampleAntiAliasingOptions()
  */
 export interface View$MultiSampleAntiAliasingOptions {
@@ -1581,13 +1642,40 @@ export interface View$MultiSampleAntiAliasingOptions {
     customResolve?: boolean;
 }
 
+export enum View$TemporalAntiAliasingOptions$BoxType {
+    AABB, // use an AABB neighborhood
+    VARIANCE, // use the variance of the neighborhood (not recommended)
+    AABB_VARIANCE, // use both AABB and variance
+}
+
+export enum View$TemporalAntiAliasingOptions$BoxClipping {
+    ACCURATE, // Accurate box clipping
+    CLAMP, // clamping
+    NONE, // no rejections (use for debugging)
+}
+
+export enum View$TemporalAntiAliasingOptions$JitterPattern {
+    RGSS_X4,
+    UNIFORM_HELIX_X4,
+    HALTON_23_X8,
+    HALTON_23_X16,
+    HALTON_23_X32,
+}
+
 /**
  * Options for Temporal Anti-aliasing (TAA)
+ * Most TAA parameters are extremely costly to change, as they will trigger the TAA post-process
+ * shaders to be recompiled. These options should be changed or set during initialization.
+ * `filterWidth`, `feedback` and `jitterPattern`, however, can be changed at any time.
+ *
+ * `feedback` of 0.1 effectively accumulates a maximum of 19 samples in steady state.
+ * see "A Survey of Temporal Antialiasing Techniques" by Lei Yang and all for more information.
+ *
  * @see setTemporalAntiAliasingOptions()
  */
 export interface View$TemporalAntiAliasingOptions {
     /**
-     * reconstruction filter width typically between 0 (sharper, aliased) and 1 (smoother)
+     * reconstruction filter width typically between 0.2 (sharper, aliased) and 1.5 (smoother)
      */
     filterWidth?: number;
     /**
@@ -1595,9 +1683,51 @@ export interface View$TemporalAntiAliasingOptions {
      */
     feedback?: number;
     /**
+     * texturing lod bias (typically -1 or -2)
+     */
+    lodBias?: number;
+    /**
+     * post-TAA sharpen, especially useful when upscaling is true.
+     */
+    sharpness?: number;
+    /**
      * enables or disables temporal anti-aliasing
      */
     enabled?: boolean;
+    /**
+     * 4x TAA upscaling. Disables Dynamic Resolution. [BETA]
+     */
+    upscaling?: boolean;
+    /**
+     * whether to filter the history buffer
+     */
+    filterHistory?: boolean;
+    /**
+     * whether to apply the reconstruction filter to the input
+     */
+    filterInput?: boolean;
+    /**
+     * whether to use the YcoCg color-space for history rejection
+     */
+    useYCoCg?: boolean;
+    /**
+     * type of color gamut box
+     */
+    boxType?: View$TemporalAntiAliasingOptions$BoxType;
+    /**
+     * clipping algorithm
+     */
+    boxClipping?: View$TemporalAntiAliasingOptions$BoxClipping;
+    jitterPattern?: View$TemporalAntiAliasingOptions$JitterPattern;
+    varianceGamma?: number;
+    /**
+     * adjust the feedback dynamically to reduce flickering
+     */
+    preventFlickering?: boolean;
+    /**
+     * whether to apply history reprojection (debug option)
+     */
+    historyReprojection?: boolean;
 }
 
 /**
@@ -1660,6 +1790,7 @@ export enum View$ShadowType {
     VSM, // variance shadows
     DPCF, // PCF with contact hardening simulation
     PCSS, // PCF with soft shadows and contact hardening
+    PCFd,
 }
 
 /**
@@ -1721,4 +1852,11 @@ export interface View$SoftShadowOptions {
      * Acceptable values are equal to or greater than 1.
      */
     penumbraRatioScale?: number;
+}
+
+/**
+ * Options for stereoscopic (multi-eye) rendering.
+ */
+export interface View$StereoscopicOptions {
+    enabled?: boolean;
 }

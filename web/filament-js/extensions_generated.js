@@ -19,13 +19,13 @@ Filament.loadGeneratedExtensions = function() {
             // JavaScript binding for dirt is not yet supported, must use default value.
             // JavaScript binding for dirtStrength is not yet supported, must use default value.
             strength: 0.10,
-            resolution: 360,
-            anamorphism: 1.0,
+            resolution: 384,
             levels: 6,
             blendMode: Filament.View$BloomOptions$BlendMode.ADD,
             threshold: true,
             enabled: false,
             highlight: 1000.0,
+            quality: Filament.View$QualityLevel.LOW,
             lensFlare: false,
             starburst: true,
             chromaticAberration: 0.005,
@@ -42,14 +42,16 @@ Filament.loadGeneratedExtensions = function() {
     Filament.View.prototype.setFogOptionsDefaults = function(overrides) {
         const options = {
             distance: 0.0,
+            cutOffDistance: Infinity,
             maximumOpacity: 1.0,
             height: 0.0,
             heightFalloff: 1.0,
-            color: [0.5, 0.5, 0.5],
+            color: [ 1.0, 1.0, 1.0 ],
             density: 0.1,
             inScatteringStart: 0.0,
             inScatteringSize: -1.0,
             fogColorFromIbl: false,
+            // JavaScript binding for skyColor is not yet supported, must use default value.
             enabled: false,
         };
         return Object.assign(options, overrides);
@@ -58,6 +60,7 @@ Filament.loadGeneratedExtensions = function() {
     Filament.View.prototype.setDepthOfFieldOptionsDefaults = function(overrides) {
         const options = {
             cocScale: 1.0,
+            cocAspectRatio: 1.0,
             maxApertureDiameter: 0.01,
             enabled: false,
             filter: Filament.View$DepthOfFieldOptions$Filter.MEDIAN,
@@ -136,8 +139,20 @@ Filament.loadGeneratedExtensions = function() {
     Filament.View.prototype.setTemporalAntiAliasingOptionsDefaults = function(overrides) {
         const options = {
             filterWidth: 1.0,
-            feedback: 0.04,
+            feedback: 0.12,
+            lodBias: -1.0,
+            sharpness: 0.0,
             enabled: false,
+            upscaling: false,
+            filterHistory: true,
+            filterInput: true,
+            useYCoCg: false,
+            boxType: Filament.View$TemporalAntiAliasingOptions$BoxType.AABB,
+            boxClipping: Filament.View$TemporalAntiAliasingOptions$BoxClipping.ACCURATE,
+            jitterPattern: Filament.View$TemporalAntiAliasingOptions$JitterPattern.HALTON_23_X16,
+            varianceGamma: 1.0,
+            preventFlickering: false,
+            historyReprojection: true,
         };
         return Object.assign(options, overrides);
     };
@@ -176,6 +191,13 @@ Filament.loadGeneratedExtensions = function() {
         const options = {
             penumbraScale: 1.0,
             penumbraRatioScale: 1.0,
+        };
+        return Object.assign(options, overrides);
+    };
+
+    Filament.View.prototype.setStereoscopicOptionsDefaults = function(overrides) {
+        const options = {
+            enabled: false,
         };
         return Object.assign(options, overrides);
     };

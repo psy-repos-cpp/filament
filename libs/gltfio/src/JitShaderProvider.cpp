@@ -287,7 +287,7 @@ std::string shaderFromKey(const MaterialKey& config) {
 
                 // TODO: Provided by Filament, but this should really be provided/computed by gltfio
                 // TODO: This scale is per renderable and should include the scale of the mesh node
-                float scale = object_uniforms.userData;
+                float scale = getObjectUserData();
                 material.thickness = materialParams.volumeThicknessFactor * scale;
             )SHADER";
 
@@ -307,6 +307,35 @@ std::string shaderFromKey(const MaterialKey& config) {
             shader += R"SHADER(
                 material.ior = materialParams.ior;
             )SHADER";
+        }
+
+        if (config.hasSpecular) {
+            shader += R"SHADER(
+                material.specularFactor = materialParams.specularStrength;
+                material.specularColorFactor = materialParams.specularColorFactor;
+            )SHADER";
+
+            if (config.hasSpecularTexture) {
+                shader += "highp float2 specularUV = ${specular};\n";
+                if (config.hasTextureTransforms) {
+                    shader += "specularUV = (vec3(specularUV, 1.0) * "
+                              "materialParams.specularUvMatrix).xy;\n";
+                }
+                shader += R"SHADER(
+                    material.specularFactor *= texture(materialParams_specularMap, specularUV).a;
+                )SHADER";
+            }
+
+            if (config.hasSpecularColorTexture) {
+                shader += "highp float2 specularColorUV = ${specularColor};\n";
+                if (config.hasTextureTransforms) {
+                    shader += "specularColorUV = (vec3(specularColorUV, 1.0) * "
+                              "materialParams.specularColorUvMatrix).xy;\n";
+                }
+                shader += R"SHADER(
+                    material.specularColorFactor *= texture(materialParams_specularColorMap, specularColorUV).rgb;
+                )SHADER";
+            }
         }
     }
 
@@ -330,7 +359,9 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
            MaterialBuilder::TransparencyMode::TWO_PASSES_TWO_SIDES :
            MaterialBuilder::TransparencyMode::DEFAULT)
            .reflectionMode(MaterialBuilder::ReflectionMode::SCREEN_SPACE)
-           .targetApi(filamat::targetApiFromBackend(engine->getBackend()));
+           .targetApi(filamat::targetApiFromBackend(engine->getBackend()))
+           .stereoscopicType(engine->getConfig().stereoscopicType)
+           .stereoscopicEyeCount(engine->getConfig().stereoscopicEyeCount);
 
     if (!optimizeShaders) {
         builder.optimization(MaterialBuilder::Optimization::NONE);
@@ -461,6 +492,42 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
         }
     }
 
+    // SPECULAR
+    if (config.hasSpecular) {
+        builder.parameter("specularStrength", MaterialBuilder::UniformType::FLOAT);
+        builder.parameter("specularColorFactor", MaterialBuilder::UniformType::FLOAT3);
+        if (config.hasSpecularTexture) {
+            builder.parameter("specularMap", MaterialBuilder::SamplerType::SAMPLER_2D);
+            if (config.hasTextureTransforms) {
+                builder.parameter("specularUvMatrix", MaterialBuilder::UniformType::MAT3,
+                                  MaterialBuilder::ParameterPrecision::HIGH);
+            }
+        }
+        if (config.hasSpecularColorTexture) {
+            builder.parameter("specularColorMap", MaterialBuilder::SamplerType::SAMPLER_2D);
+            if (config.hasTextureTransforms) {
+                builder.parameter("specularColorUvMatrix", MaterialBuilder::UniformType::MAT3,
+                                  MaterialBuilder::ParameterPrecision::HIGH);
+            }
+        }
+    }
+
+    // BLENDING
+    switch (config.alphaMode) {
+        case AlphaMode::OPAQUE:
+            builder.blending(MaterialBuilder::BlendingMode::OPAQUE);
+            break;
+        case AlphaMode::MASK:
+            builder.blending(MaterialBuilder::BlendingMode::MASKED);
+            break;
+        case AlphaMode::BLEND:
+            builder.blending(MaterialBuilder::BlendingMode::FADE);
+            break;
+        default:
+            // Ignore
+            break;
+    }
+
     // TRANSMISSION
     if (config.hasTransmission) {
         // According to KHR_materials_transmission, the minimum expectation for a compliant renderer
@@ -479,24 +546,6 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
                 builder.parameter("transmissionUvMatrix", MaterialBuilder::UniformType::MAT3,
                         MaterialBuilder::ParameterPrecision::HIGH);
             }
-        }
-
-        builder.blending(MaterialBuilder::BlendingMode::MASKED);
-    } else {
-        // BLENDING
-        switch (config.alphaMode) {
-            case AlphaMode::OPAQUE:
-                builder.blending(MaterialBuilder::BlendingMode::OPAQUE);
-                break;
-            case AlphaMode::MASK:
-                builder.blending(MaterialBuilder::BlendingMode::MASKED);
-                break;
-            case AlphaMode::BLEND:
-                builder.blending(MaterialBuilder::BlendingMode::FADE);
-                break;
-            default:
-                // Ignore
-                break;
         }
     }
 
@@ -517,8 +566,6 @@ Material* createMaterial(Engine* engine, const MaterialKey& config, const UvMap&
                         MaterialBuilder::ParameterPrecision::HIGH);
             }
         }
-
-        builder.blending(MaterialBuilder::BlendingMode::MASKED);
     }
 
     // IOR

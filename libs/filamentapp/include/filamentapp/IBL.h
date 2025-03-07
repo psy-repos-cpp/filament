@@ -22,6 +22,7 @@
 #include <math/vec3.h>
 
 #include <string>
+#include <sstream>
 
 namespace filament {
 class Engine;
@@ -55,6 +56,11 @@ public:
         return mSkybox;
     }
 
+    filament::Texture* getFogTexture() const noexcept {
+        return mFogTexture;
+    }
+
+    bool hasSphericalHarmonics() const { return mHasSphericalHarmonics; }
     filament::math::float3 const* getSphericalHarmonics() const { return mBands; }
 
 private:
@@ -71,10 +77,12 @@ private:
     filament::Engine& mEngine;
 
     filament::math::float3 mBands[9] = {};
+    bool mHasSphericalHarmonics = false;
 
     filament::Texture* mTexture = nullptr;
     filament::IndirectLight* mIndirectLight = nullptr;
     filament::Texture* mSkyboxTexture = nullptr;
+    filament::Texture* mFogTexture = nullptr;
     filament::Skybox* mSkybox = nullptr;
 };
 

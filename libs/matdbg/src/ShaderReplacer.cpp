@@ -25,6 +25,7 @@
 
 #include <utils/Log.h>
 
+#include <algorithm>
 #include <sstream>
 
 #include <GlslangToSpv.h>
@@ -35,7 +36,7 @@
 #include "eiff/ChunkContainer.h"
 #include "eiff/DictionarySpirvChunk.h"
 #include "eiff/DictionaryTextChunk.h"
-#include "eiff/MaterialSpirvChunk.h"
+#include "eiff/MaterialBinaryChunk.h"
 #include "eiff/MaterialTextChunk.h"
 #include "eiff/LineDictionary.h"
 
@@ -50,9 +51,29 @@ using namespace glslang;
 using namespace utils;
 
 using std::ostream;
-using std::stringstream;
 using std::streampos;
+using std::stringstream;
 using std::vector;
+
+
+namespace {
+
+// This is to ensure that the edited material package have the same order of shaders as the output
+// of the original material. We use the ordering in the front-end to simplify logic.
+template<typename RecordType>
+void sortRecords(std::vector<RecordType>& records) {
+    std::sort(records.begin(), records.end(), [](RecordType const& a, RecordType const& b) -> bool {
+        if (a.shaderModel != b.shaderModel) {
+            return a.shaderModel < b.shaderModel;
+        }
+        if (a.variant.key != b.variant.key) {
+            return a.variant.key < b.variant.key;
+        }
+        return a.stage < b.stage;
+    });
+}
+
+} // anonymous
 
 // Tiny database of shader text that can import / export MaterialTextChunk and DictionaryTextChunk.
 class ShaderIndex {
@@ -62,7 +83,7 @@ public:
     void writeChunks(ostream& stream);
 
     // Replaces the specified shader text with new content.
-    void replaceShader(backend::ShaderModel shaderModel, Variant variant,
+    void replaceShader(backend::ShaderModel model, Variant variant,
             ShaderStage stage, const char* source, size_t sourceLength);
 
     bool isEmpty() const { return mShaderRecords.size() == 0; }
@@ -73,7 +94,7 @@ private:
     vector<TextEntry> mShaderRecords;
 };
 
-// Tiny database of data blobs that can import / export MaterialSpirvChunk and DictionarySpirvChunk.
+// Tiny database of data blobs that can import / export MaterialBinaryChunk and DictionarySpirvChunk.
 // The blobs are stored *after* they have been compressed by SMOL-V.
 class BlobIndex {
 public:
@@ -90,26 +111,37 @@ public:
 private:
     const ChunkType mDictTag;
     const ChunkType mMatTag;
-    vector<SpirvEntry> mShaderRecords;
+    vector<BinaryEntry> mShaderRecords;
     filaflat::BlobDictionary mDataBlobs;
 };
 
-ShaderReplacer::ShaderReplacer(Backend backend, const void* data, size_t size) :
+ShaderReplacer::ShaderReplacer(Backend backend, ShaderLanguage language,
+                               const void* data, size_t size) :
         mBackend(backend), mOriginalPackage(data, size) {
-    switch (backend) {
-        case Backend::OPENGL:
-            mMaterialTag = ChunkType::MaterialGlsl;
+    switch (language) {
+        // ESSL1 and ESSL3 share the same dictionary, and replacing either will corrupt the other.
+        // If replacing one, delete both.
+        case backend::ShaderLanguage::ESSL1:
+            mMaterialTag = ChunkType::MaterialEssl1;
+            mDeleteTag = ChunkType::MaterialGlsl;
             mDictionaryTag = ChunkType::DictionaryText;
             break;
-        case Backend::METAL:
+        case backend::ShaderLanguage::ESSL3:
+            mMaterialTag = ChunkType::MaterialGlsl;
+            mDeleteTag = ChunkType::MaterialEssl1;
+            mDictionaryTag = ChunkType::DictionaryText;
+            break;
+        case backend::ShaderLanguage::MSL:
             mMaterialTag = ChunkType::MaterialMetal;
             mDictionaryTag = ChunkType::DictionaryText;
             break;
-        case Backend::VULKAN:
+        case backend::ShaderLanguage::SPIRV:
             mMaterialTag = ChunkType::MaterialSpirv;
             mDictionaryTag = ChunkType::DictionarySpirv;
             break;
-        default:
+        case backend::ShaderLanguage::METAL_LIBRARY:
+            mMaterialTag = ChunkType::MaterialMetalLibrary;
+            mDictionaryTag = ChunkType::DictionaryMetalLibrary;
             break;
     }
 }
@@ -133,7 +165,7 @@ bool ShaderReplacer::replaceShaderSource(ShaderModel shaderModel, Variant varian
         return replaceSpirv(shaderModel, variant, stage, sourceString, stringLength);
     }
 
-    // Clone all chunks except Dictionary* and Material*.
+    // Clone (almost) all chunks except Dictionary* and Material*.
     stringstream sstream(std::string((const char*) cc.getData(), cc.getSize()));
     stringstream tstream;
     {
@@ -145,7 +177,9 @@ bool ShaderReplacer::replaceShaderSource(ShaderModel shaderModel, Variant varian
             sstream.read((char*) &size, sizeof(size));
             content.resize(size);
             sstream.read((char*) content.data(), size);
-            if (ChunkType(type) == mDictionaryTag|| ChunkType(type) == mMaterialTag) {
+            if (ChunkType(type) == mDictionaryTag
+                    || ChunkType(type) == mDeleteTag
+                    || ChunkType(type) == mMaterialTag) {
                 continue;
             }
             tstream.write((char*) &type, sizeof(type));
@@ -200,7 +234,7 @@ bool ShaderReplacer::replaceSpirv(ShaderModel shaderModel, Variant variant,
                 SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS, &binary, &diagnostic);
         spvContextDestroy(context);
         if (error) {
-            slog.e << "ShaderReplacer spirv-as failed (spv_result_t: " << error << ")" << io::endl;
+            slog.e << "[matdbg] ShaderReplacer spirv-as failed (spv_result_t: " << error << ")" << io::endl;
             spvDiagnosticPrint(diagnostic);
             spvDiagnosticDestroy(diagnostic);
             return false;
@@ -227,7 +261,7 @@ bool ShaderReplacer::replaceSpirv(ShaderModel shaderModel, Variant variant,
 
         const bool ok = tShader.parse(&DefaultTBuiltInResource, version, false, msg);
         if (!ok) {
-            slog.e << "ShaderReplacer parse:\n" << tShader.getInfoLog() << io::endl;
+            slog.e << "[matdbg] ShaderReplacer parse:\n" << tShader.getInfoLog() << io::endl;
             return false;
         }
 
@@ -235,7 +269,7 @@ bool ShaderReplacer::replaceSpirv(ShaderModel shaderModel, Variant variant,
         program.addShader(&tShader);
         const bool linkOk = program.link(msg);
         if (!linkOk) {
-            slog.e << "ShaderReplacer link:\n" << program.getInfoLog() << io::endl;
+            slog.e << "[matdbg] ShaderReplacer link:\n" << program.getInfoLog() << io::endl;
             return false;
         }
 
@@ -247,7 +281,7 @@ bool ShaderReplacer::replaceSpirv(ShaderModel shaderModel, Variant variant,
     source = (const char*) spirv.data();
     sourceLength = spirv.size() * 4;
 
-    slog.i << "Success re-generating SPIR-V. (" << sourceLength << " bytes)" << io::endl;
+    slog.i << "[matdbg] Success re-generating SPIR-V. (" << sourceLength << " bytes)" << io::endl;
 
     // Clone all chunks except Dictionary* and Material*.
     filaflat::ChunkContainer const& cc = mOriginalPackage;
@@ -297,8 +331,15 @@ size_t ShaderReplacer::getEditedSize() const {
     return mEditedPackage->getSize();
 }
 
+filamat::ChunkType ShaderReplacer::getMaterialTag() const noexcept {
+    return mMaterialTag;
+}
+
 ShaderIndex::ShaderIndex(ChunkType dictTag, ChunkType matTag, const filaflat::ChunkContainer& cc) :
         mDictTag(dictTag), mMatTag(matTag) {
+
+    assert_invariant(matTag != filamat::ChunkType::MaterialSpirv);
+
     filaflat::BlobDictionary stringBlobs;
     DictionaryReader reader;
     reader.unflatten(cc, dictTag, stringBlobs);
@@ -306,18 +347,17 @@ ShaderIndex::ShaderIndex(ChunkType dictTag, ChunkType matTag, const filaflat::Ch
     filaflat::MaterialChunk matChunk(cc);
     matChunk.initialize(matTag);
 
-    const auto& offsets = matChunk.getOffsets();
-    mShaderRecords.reserve(offsets.size());
-    for (auto [key, offset] : offsets) {
-        TextEntry info;
-        filaflat::MaterialChunk::decodeKey(key, &info.shaderModel, &info.variantKey, &info.stage);
-        ShaderContent content;
-        UTILS_UNUSED_IN_RELEASE bool success = matChunk.getShader(content,
-                stringBlobs, info.shaderModel, Variant(info.variantKey), info.stage);
-        info.shader = std::string(content.data(), content.data() + content.size() - 1);
-        assert_invariant(success);
-        mShaderRecords.emplace_back(info);
-    }
+    matChunk.visitShaders([this, &matChunk, &stringBlobs]
+            (ShaderModel shaderModel, Variant variant, ShaderStage stage) {
+                ShaderContent content;
+                UTILS_UNUSED_IN_RELEASE bool success = matChunk.getShader(content,
+                        stringBlobs, shaderModel, variant, stage);
+
+                std::string source{ content.data(), content.data() + content.size() - 1u };
+                assert_invariant(success);
+
+                mShaderRecords.push_back({ shaderModel, variant, stage, std::move(source) });
+            });
 }
 
 void ShaderIndex::writeChunks(ostream& stream) {
@@ -325,10 +365,11 @@ void ShaderIndex::writeChunks(ostream& stream) {
     for (const auto& record : mShaderRecords) {
         lines.addText(record.shader);
     }
+    sortRecords(mShaderRecords);
 
     filamat::ChunkContainer cc;
-    const auto& dchunk = cc.addChild<DictionaryTextChunk>(std::move(lines), mDictTag);
-    cc.addChild<MaterialTextChunk>(std::move(mShaderRecords), dchunk.getDictionary(), mMatTag);
+    const auto& dchunk = cc.push<DictionaryTextChunk>(std::move(lines), mDictTag);
+    cc.push<MaterialTextChunk>(std::move(mShaderRecords), dchunk.getDictionary(), mMatTag);
 
     const size_t bufSize = cc.getSize();
     auto buffer = std::make_unique<uint8_t[]>(bufSize);
@@ -338,17 +379,16 @@ void ShaderIndex::writeChunks(ostream& stream) {
     stream.write((char*)buffer.get(), bufSize);
 }
 
-void ShaderIndex::replaceShader(backend::ShaderModel shaderModel, Variant variant,
+void ShaderIndex::replaceShader(backend::ShaderModel model, Variant variant,
             backend::ShaderStage stage, const char* source, size_t sourceLength) {
-    const uint8_t model = uint8_t(shaderModel);
     for (auto& record : mShaderRecords) {
-        if (record.shaderModel == model && record.variantKey == variant.key &&
-                record.stage == uint8_t(stage)) {
+        if (record.shaderModel == model && record.variant == variant &&
+                record.stage == stage) {
             record.shader = std::string(source, sourceLength);
             return;
         }
     }
-    slog.e << "Failed to replace shader." << io::endl;
+    slog.e << "[matdbg] Failed to replace shader." << io::endl;
 }
 
 BlobIndex::BlobIndex(ChunkType dictTag, ChunkType matTag, const filaflat::ChunkContainer& cc) :
@@ -363,8 +403,8 @@ BlobIndex::BlobIndex(ChunkType dictTag, ChunkType matTag, const filaflat::ChunkC
     const auto& offsets = matChunk.getOffsets();
     mShaderRecords.reserve(offsets.size());
     for (auto [key, offset] : offsets) {
-        SpirvEntry info;
-        filaflat::MaterialChunk::decodeKey(key, &info.shaderModel, &info.variantKey, &info.stage);
+        BinaryEntry info;
+        filaflat::MaterialChunk::decodeKey(key, &info.shaderModel, &info.variant, &info.stage);
         info.dictionaryIndex = offset;
         mShaderRecords.emplace_back(info);
     }
@@ -376,8 +416,8 @@ void BlobIndex::writeChunks(ostream& stream) {
     for (auto& record : mShaderRecords) {
         const auto& src = mDataBlobs[record.dictionaryIndex];
         assert(src.size() % 4 == 0);
-        const uint32_t* ptr = (const uint32_t*) src.data();
-        record.dictionaryIndex = blobs.addBlob(vector<uint32_t>(ptr, ptr + src.size() / 4));
+        uint8_t const* ptr = (uint8_t const*) src.data();
+        record.dictionaryIndex = blobs.addBlob(vector<uint8_t>(ptr, ptr + src.size()));
     }
 
     // Adjust start cursor of flatteners to match alignment of output stream.
@@ -388,10 +428,12 @@ void BlobIndex::writeChunks(ostream& stream) {
         }
     };
 
+    sortRecords(mShaderRecords);
+
     // Apply SMOL-V compression and write out the results.
     filamat::ChunkContainer cc;
-    cc.addChild<MaterialSpirvChunk>(std::move(mShaderRecords));
-    cc.addChild<DictionarySpirvChunk>(std::move(blobs), false);
+    cc.push<MaterialBinaryChunk>(std::move(mShaderRecords), ChunkType::MaterialSpirv);
+    cc.push<DictionarySpirvChunk>(std::move(blobs), false);
 
     Flattener prepass = Flattener::getDryRunner();
     initialize(prepass);
@@ -408,13 +450,10 @@ void BlobIndex::writeChunks(ostream& stream) {
     stream.write((char*)buffer.get() + pad, bufSize - pad);
 }
 
-void BlobIndex::replaceShader(ShaderModel shaderModel, Variant variant,
+void BlobIndex::replaceShader(ShaderModel model, Variant variant,
             ShaderStage stage, const char* source, size_t sourceLength) {
-    const uint8_t model = (uint8_t) shaderModel;
     for (auto& record : mShaderRecords) {
-        if (record.shaderModel == model && record.variantKey == variant.key &&
-                record.stage == uint8_t(stage)) {
-
+        if (record.shaderModel == model && record.variant == variant && record.stage == stage) {
             // TODO: because a single blob entry might be used by more than one variant, matdbg
             // users may unwittingly edit more than 1 variant when multiple variants have the exact
             // same content before the edit. In practice this is rarely problematic, but we should
@@ -428,7 +467,7 @@ void BlobIndex::replaceShader(ShaderModel shaderModel, Variant variant,
             return;
         }
     }
-    slog.e << "Unable to replace shader." << io::endl;
+    slog.e << "[matdbg] Unable to replace shader." << io::endl;
 }
 
 } // namespace filament::matdbg

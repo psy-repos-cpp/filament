@@ -65,6 +65,7 @@ const char* toString(BlendingMode blendingMode) noexcept {
         case BlendingMode::FADE: return "fade";
         case BlendingMode::MULTIPLY: return "multiply";
         case BlendingMode::SCREEN: return "screen";
+        case BlendingMode::CUSTOM: return "custom";
     }
     return "--";
 }
@@ -232,6 +233,16 @@ const char* toString(backend::SamplerFormat format) noexcept {
         case backend::SamplerFormat::UINT: return "uint";
         case backend::SamplerFormat::FLOAT: return "float";
         case backend::SamplerFormat::SHADOW: return "shadow";
+    }
+    return "--";
+}
+
+inline
+const char* toString(backend::ConstantType type) noexcept {
+    switch (type) {
+        case backend::ConstantType::FLOAT: return "float";
+        case backend::ConstantType::INT: return "int";
+        case backend::ConstantType::BOOL: return "bool";
     }
     return "--";
 }

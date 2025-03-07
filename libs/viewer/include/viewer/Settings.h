@@ -57,8 +57,10 @@ enum class ToneMapping : uint8_t {
     ACES_LEGACY   = 1,
     ACES          = 2,
     FILMIC        = 3,
-    GENERIC       = 4,
-    DISPLAY_RANGE = 5,
+    AGX           = 4,
+    GENERIC       = 5,
+    PBR_NEUTRAL   = 6,
+    DISPLAY_RANGE = 7,
 };
 
 using AmbientOcclusionOptions = filament::View::AmbientOcclusionOptions;
@@ -76,13 +78,14 @@ using TemporalAntiAliasingOptions = filament::View::TemporalAntiAliasingOptions;
 using VignetteOptions = filament::View::VignetteOptions;
 using VsmShadowOptions = filament::View::VsmShadowOptions;
 using GuardBandOptions = filament::View::GuardBandOptions;
+using StereoscopicOptions = filament::View::StereoscopicOptions;
 using LightManager = filament::LightManager;
 
 // These functions push all editable property values to their respective Filament objects.
 void applySettings(Engine* engine, const ViewSettings& settings, View* dest);
 void applySettings(Engine* engine, const MaterialSettings& settings, MaterialInstance* dest);
 void applySettings(Engine* engine, const LightSettings& settings, IndirectLight* ibl, utils::Entity sunlight,
-        utils::Entity* sceneLights, size_t sceneLightCount, LightManager* lm, Scene* scene, View* view);
+        const utils::Entity* sceneLights, size_t sceneLightCount, LightManager* lm, Scene* scene, View* view);
 void applySettings(Engine* engine, const ViewerOptions& settings, Camera* camera, Skybox* skybox,
         Renderer* renderer);
 
@@ -114,8 +117,14 @@ struct GenericToneMapperSettings {
     float midGrayIn = 0.18f;
     float midGrayOut = 0.215f;
     float hdrMax = 10.0f;
-    bool operator!=(const GenericToneMapperSettings &rhs) const { return !(rhs == *this); }
-    bool operator==(const GenericToneMapperSettings &rhs) const;
+    bool operator!=(const GenericToneMapperSettings& rhs) const { return !(rhs == *this); }
+    bool operator==(const GenericToneMapperSettings& rhs) const;
+};
+
+struct AgxToneMapperSettings {
+    AgxToneMapper::AgxLook look = AgxToneMapper::AgxLook::NONE;
+    bool operator!=(const AgxToneMapperSettings& rhs) const { return !(rhs == *this); }
+    bool operator==(const AgxToneMapperSettings& rhs) const;
 };
 
 struct ColorGradingSettings {
@@ -127,7 +136,7 @@ struct ColorGradingSettings {
     filament::ColorGrading::QualityLevel quality = filament::ColorGrading::QualityLevel::MEDIUM;
     ToneMapping toneMapping = ToneMapping::ACES_LEGACY;
     bool padding0{};
-    bool padding1{};
+    AgxToneMapperSettings agxToneMapper;
     color::ColorSpace colorspace = Rec709-sRGB-D65;
     GenericToneMapperSettings genericToneMapper;
     math::float4 shadows{1.0f, 1.0f, 1.0f, 0.0f};
@@ -160,6 +169,10 @@ struct DynamicLightingSettings {
     float zLightFar = 100;
 };
 
+struct FogSettings {
+    Texture* fogColorTexture = nullptr;
+};
+
 // This defines fields in the same order as the setter methods in filament::View.
 struct ViewSettings {
     // standalone View settings
@@ -181,10 +194,12 @@ struct ViewSettings {
     VignetteOptions vignette;
     VsmShadowOptions vsmShadowOptions;
     GuardBandOptions guardBand;
+    StereoscopicOptions stereoscopicOptions;
 
     // Custom View Options
     ColorGradingSettings colorGrading;
     DynamicLightingSettings dynamicLighting;
+    FogSettings fogSettings;
 };
 
 template <typename T>
@@ -204,6 +219,9 @@ struct LightSettings {
     LightManager::ShadowOptions shadowOptions;
     SoftShadowOptions softShadowOptions;
     float sunlightIntensity = 100000.0f;
+    float sunlightHaloSize = 10.0f;
+    float sunlightHaloFalloff = 80.0f;
+    float sunlightAngularRadius = 1.9f;
     math::float3 sunlightDirection = {0.6, -1.0, -0.8};
     math::float3 sunlightColor = filament::Color::toLinear<filament::ACCURATE>({ 0.98, 0.92, 0.89});
     float iblIntensity = 30000.0f;
@@ -214,6 +232,10 @@ struct ViewerOptions {
     float cameraAperture = 16.0f;
     float cameraSpeed = 125.0f;
     float cameraISO = 100.0f;
+    float cameraNear = 0.1f;
+    float cameraFar = 100.0f;
+    float cameraEyeOcularDistance = 0.0f;
+    float cameraEyeToeIn = 0.0f;
     float groundShadowStrength = 0.75f;
     bool groundPlaneEnabled = false;
     bool skyboxEnabled = true;

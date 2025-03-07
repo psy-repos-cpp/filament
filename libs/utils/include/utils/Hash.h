@@ -18,11 +18,18 @@
 #define TNT_UTILS_HASH_H
 
 #include <functional>   // for std::hash
+#include <string_view>
+#include <utility>
 
 #include <stdint.h>
 #include <stddef.h>
 
 namespace utils::hash {
+
+inline size_t combine(size_t lhs, size_t rhs) noexcept {
+    std::pair<size_t, size_t> const p{ lhs, rhs };
+    return std::hash<std::string_view>{}({ (char*)&p, sizeof(p) });
+}
 
 // Hash function that takes an arbitrary swath of word-aligned data.
 inline uint32_t murmur3(const uint32_t* key, size_t wordCount, uint32_t seed) noexcept {
@@ -53,7 +60,7 @@ inline uint32_t murmurSlow(const uint8_t* key, size_t byteCount, uint32_t seed) 
 
     // The remainder is identical to murmur3() except an inner loop safely "reads" an entire word.
     uint32_t h = seed;
-    size_t i = wordCount;
+    size_t wc = wordCount;
     do {
         uint32_t k = 0;
         for (int i = 0; i < 4 && key < last; ++i, ++key) {
@@ -66,7 +73,7 @@ inline uint32_t murmurSlow(const uint8_t* key, size_t byteCount, uint32_t seed) 
         h ^= k;
         h = (h << 13u) | (h >> 19u);
         h = (h * 5u) + 0xe6546b64u;
-    } while (--i);
+    } while (--wc);
     h ^= wordCount;
     h ^= h >> 16u;
     h *= 0x85ebca6bu;

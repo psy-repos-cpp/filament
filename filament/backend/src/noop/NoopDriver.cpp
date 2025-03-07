@@ -14,8 +14,15 @@
  * limitations under the License.
  */
 
+#include <backend/DriverEnums.h>
+#include <backend/Handle.h>
+
 #include "noop/NoopDriver.h"
 #include "CommandStreamDispatcher.h"
+
+#include <backend/Handle.h>
+
+#include <stdint.h>
 
 namespace filament::backend {
 
@@ -32,11 +39,15 @@ Dispatcher NoopDriver::getDispatcher() const noexcept {
 }
 
 ShaderModel NoopDriver::getShaderModel() const noexcept {
-#if defined(__ANDROID__) || defined(IOS) || defined(__EMSCRIPTEN__)
+#if defined(__ANDROID__) || defined(FILAMENT_IOS) || defined(__EMSCRIPTEN__)
     return ShaderModel::MOBILE;
 #else
     return ShaderModel::DESKTOP;
 #endif
+}
+
+ShaderLanguage NoopDriver::getShaderLanguage() const noexcept {
+    return ShaderLanguage::ESSL3;
 }
 
 // explicit instantiation of the Dispatcher
@@ -49,16 +60,17 @@ void NoopDriver::terminate() {
 void NoopDriver::tick(int) {
 }
 
-void NoopDriver::beginFrame(int64_t monotonic_clock_ns, uint32_t frameId) {
+void NoopDriver::beginFrame(int64_t monotonic_clock_ns,
+        int64_t refreshIntervalNs, uint32_t frameId) {
 }
 
 void NoopDriver::setFrameScheduledCallback(Handle<HwSwapChain> sch,
-        FrameScheduledCallback callback, void* user) {
+        CallbackHandler* handler, FrameScheduledCallback&& callback, uint64_t flags) {
 
 }
 
 void NoopDriver::setFrameCompletedCallback(Handle<HwSwapChain> sch,
-        FrameCompletedCallback callback, void* user) {
+        CallbackHandler* handler, utils::Invocable<void(void)>&& callback) {
 
 }
 
@@ -75,6 +87,9 @@ void NoopDriver::finish(int) {
 }
 
 void NoopDriver::destroyRenderPrimitive(Handle<HwRenderPrimitive> rph) {
+}
+
+void NoopDriver::destroyVertexBufferInfo(Handle<HwVertexBufferInfo> vbih) {
 }
 
 void NoopDriver::destroyVertexBuffer(Handle<HwVertexBuffer> vbh) {
@@ -95,9 +110,6 @@ void NoopDriver::destroyProgram(Handle<HwProgram> ph) {
 void NoopDriver::destroyRenderTarget(Handle<HwRenderTarget> rth) {
 }
 
-void NoopDriver::destroySamplerGroup(Handle<HwSamplerGroup> sbh) {
-}
-
 void NoopDriver::destroySwapChain(Handle<HwSwapChain> sch) {
 }
 
@@ -107,7 +119,10 @@ void NoopDriver::destroyStream(Handle<HwStream> sh) {
 void NoopDriver::destroyTimerQuery(Handle<HwTimerQuery> tqh) {
 }
 
-void NoopDriver::destroySync(Handle<HwSync> fh) {
+void NoopDriver::destroyDescriptorSetLayout(Handle<HwDescriptorSetLayout> tqh) {
+}
+
+void NoopDriver::destroyDescriptorSet(Handle<HwDescriptorSet> tqh) {
 }
 
 Handle<HwStream> NoopDriver::createStreamNative(void* nativeStream) {
@@ -135,7 +150,7 @@ void NoopDriver::updateStreams(CommandStream* driver) {
 void NoopDriver::destroyFence(Handle<HwFence> fh) {
 }
 
-FenceStatus NoopDriver::wait(Handle<HwFence> fh, uint64_t timeout) {
+FenceStatus NoopDriver::getFenceStatus(Handle<HwFence> fh) {
     return FenceStatus::CONDITION_SATISFIED;
 }
 
@@ -177,6 +192,34 @@ bool NoopDriver::isSRGBSwapChainSupported() {
     return false;
 }
 
+bool NoopDriver::isProtectedContentSupported() {
+    return false;
+}
+
+bool NoopDriver::isStereoSupported() {
+    return false;
+}
+
+bool NoopDriver::isParallelShaderCompileSupported() {
+    return false;
+}
+
+bool NoopDriver::isDepthStencilResolveSupported() {
+    return true;
+}
+
+bool NoopDriver::isDepthStencilBlitSupported(TextureFormat format) {
+    return true;
+}
+
+bool NoopDriver::isProtectedTexturesSupported() {
+    return true;
+}
+
+bool NoopDriver::isDepthClampSupported() {
+    return false;
+}
+
 bool NoopDriver::isWorkaroundNeeded(Workaround) {
     return false;
 }
@@ -193,6 +236,10 @@ uint8_t NoopDriver::getMaxDrawBuffers() {
     return MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT;
 }
 
+size_t NoopDriver::getMaxUniformBufferSize() {
+    return 16384u;
+}
+
 void NoopDriver::updateIndexBuffer(Handle<HwIndexBuffer> ibh, BufferDescriptor&& p,
         uint32_t byteOffset) {
     scheduleDestroy(std::move(p));
@@ -202,6 +249,8 @@ void NoopDriver::updateBufferObject(Handle<HwBufferObject> ibh, BufferDescriptor
         uint32_t byteOffset) {
     scheduleDestroy(std::move(p));
 }
+
+void NoopDriver::registerBufferObjectStreams(Handle<HwBufferObject> boh, BufferObjectStreamDescriptor&& streams) { }
 
 void NoopDriver::updateBufferObjectUnsynchronized(Handle<HwBufferObject> ibh, BufferDescriptor&& p,
         uint32_t byteOffset) {
@@ -215,9 +264,6 @@ void NoopDriver::setVertexBufferObject(Handle<HwVertexBuffer> vbh, uint32_t inde
         Handle<HwBufferObject> boh) {
 }
 
-void NoopDriver::setMinMaxLevels(Handle<HwTexture> th, uint32_t minLevel, uint32_t maxLevel) {
-}
-
 void NoopDriver::update3DImage(Handle<HwTexture> th,
         uint32_t level, uint32_t xoffset, uint32_t yoffset, uint32_t zoffset,
         uint32_t width, uint32_t height, uint32_t depth,
@@ -225,21 +271,14 @@ void NoopDriver::update3DImage(Handle<HwTexture> th,
     scheduleDestroy(std::move(data));
 }
 
+void NoopDriver::setupExternalImage2(Platform::ExternalImageHandleRef image) {
+}
+
 void NoopDriver::setupExternalImage(void* image) {
 }
 
-bool NoopDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapsedTime) {
-    return false;
-}
-
-SyncStatus NoopDriver::getSyncStatus(Handle<HwSync> sh) {
-    return SyncStatus::SIGNALED;
-}
-
-void NoopDriver::setExternalImage(Handle<HwTexture> th, void* image) {
-}
-
-void NoopDriver::setExternalImagePlane(Handle<HwTexture> th, void* image, uint32_t plane) {
+TimerQueryResult NoopDriver::getTimerQueryValue(Handle<HwTimerQuery> tqh, uint64_t* elapsedTime) {
+    return TimerQueryResult::ERROR;
 }
 
 void NoopDriver::setExternalStream(Handle<HwTexture> th, Handle<HwStream> sh) {
@@ -247,13 +286,11 @@ void NoopDriver::setExternalStream(Handle<HwTexture> th, Handle<HwStream> sh) {
 
 void NoopDriver::generateMipmaps(Handle<HwTexture> th) { }
 
-bool NoopDriver::canGenerateMipmaps() {
-    return true;
-}
-
-void NoopDriver::updateSamplerGroup(Handle<HwSamplerGroup> sbh,
-        BufferDescriptor&& data) {
-    scheduleDestroy(std::move(data));
+void NoopDriver::compilePrograms(CompilerPriorityQueue priority,
+        CallbackHandler* handler, CallbackHandler::Callback callback, void* user) {
+    if (callback) {
+        scheduleCallback(handler, user, callback);
+    }
 }
 
 void NoopDriver::beginRenderPass(Handle<HwRenderTarget> rth, const RenderPassParams& params) {
@@ -271,23 +308,14 @@ void NoopDriver::makeCurrent(Handle<HwSwapChain> drawSch, Handle<HwSwapChain> re
 void NoopDriver::commit(Handle<HwSwapChain> sch) {
 }
 
-void NoopDriver::bindUniformBuffer(uint32_t index, Handle<HwBufferObject> ubh) {
+void NoopDriver::setPushConstant(backend::ShaderStage stage, uint8_t index,
+        backend::PushConstantVariant value) {
 }
 
-void NoopDriver::bindBufferRange(BufferObjectBinding bindingType, uint32_t index,
-        Handle<HwBufferObject> ubh, uint32_t offset, uint32_t size) {
+void NoopDriver::insertEventMarker(char const* string) {
 }
 
-void NoopDriver::unbindBuffer(BufferObjectBinding bindingType, uint32_t index) {
-}
-
-void NoopDriver::bindSamplers(uint32_t index, Handle<HwSamplerGroup> sbh) {
-}
-
-void NoopDriver::insertEventMarker(char const* string, uint32_t len) {
-}
-
-void NoopDriver::pushGroupMarker(char const* string,  uint32_t len) {
+void NoopDriver::pushGroupMarker(char const* string) {
 }
 
 void NoopDriver::popGroupMarker(int) {
@@ -310,17 +338,41 @@ void NoopDriver::readBufferSubData(backend::BufferObjectHandle boh,
     scheduleDestroy(std::move(p));
 }
 
-void NoopDriver::blit(TargetBufferFlags buffers,
+void NoopDriver::blitDEPRECATED(TargetBufferFlags buffers,
         Handle<HwRenderTarget> dst, Viewport dstRect,
         Handle<HwRenderTarget> src, Viewport srcRect,
         SamplerMagFilter filter) {
 }
 
+void NoopDriver::resolve(
+        Handle<HwTexture> dst, uint8_t srcLevel, uint8_t srcLayer,
+        Handle<HwTexture> src, uint8_t dstLevel, uint8_t dstLayer) {
+}
+
+void NoopDriver::blit(
+        Handle<HwTexture> dst, uint8_t srcLevel, uint8_t srcLayer, math::uint2 dstOrigin,
+        Handle<HwTexture> src, uint8_t dstLevel, uint8_t dstLayer, math::uint2 srcOrigin,
+        math::uint2 size) {
+}
+
+void NoopDriver::bindPipeline(PipelineState const& pipelineState) {
+}
+
+void NoopDriver::bindRenderPrimitive(Handle<HwRenderPrimitive> rph) {
+}
+
+void NoopDriver::draw2(uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
+}
+
 void NoopDriver::draw(PipelineState pipelineState, Handle<HwRenderPrimitive> rph,
-        uint32_t instanceCount) {
+        uint32_t indexOffset, uint32_t indexCount, uint32_t instanceCount) {
 }
 
 void NoopDriver::dispatchCompute(Handle<HwProgram> program, math::uint3 workGroupCount) {
+}
+
+void NoopDriver::scissor(
+        Viewport scissor) {
 }
 
 void NoopDriver::beginTimerQuery(Handle<HwTimerQuery> tqh) {
@@ -330,6 +382,30 @@ void NoopDriver::endTimerQuery(Handle<HwTimerQuery> tqh) {
 }
 
 void NoopDriver::resetState(int) {
+}
+
+void NoopDriver::updateDescriptorSetBuffer(
+        backend::DescriptorSetHandle dsh,
+        backend::descriptor_binding_t binding,
+        backend::BufferObjectHandle boh,
+        uint32_t offset,
+        uint32_t size) {
+}
+
+void NoopDriver::updateDescriptorSetTexture(
+        backend::DescriptorSetHandle dsh,
+        backend::descriptor_binding_t binding,
+        backend::TextureHandle th,
+        SamplerParams params) {
+}
+
+void NoopDriver::bindDescriptorSet(
+        backend::DescriptorSetHandle dsh,
+        backend::descriptor_set_t set,
+        backend::DescriptorSetOffsetArray&& offsets) {
+}
+
+void NoopDriver::setDebugTag(HandleBase::HandleId handleId, utils::CString tag) {
 }
 
 } // namespace filament

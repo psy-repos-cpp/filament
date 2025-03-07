@@ -23,6 +23,8 @@ set(SRCS
         src/Settings.cpp
         src/Settings_generated.cpp
         src/Settings_generated.h
+        src/TIFFExport.cpp
+        src/TIFFExport.h
         src/ViewerGui.cpp
 )
 
@@ -34,13 +36,17 @@ target_link_libraries(${TARGET} PUBLIC imgui filament gltfio_core filagui jsmn c
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
 
+if (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "instanced")
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_INSTANCED)
+elseif (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "multiview")
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_MULTIVIEW)
+endif ()
+
 # ==================================================================================================
 # Compiler flags
 # ==================================================================================================
 if (MSVC)
-    target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:/fp:fast>)
 else()
-    target_compile_options(${TARGET} PRIVATE $<$<CONFIG:Release>:-ffast-math>)
     target_compile_options(${TARGET} PRIVATE -Wno-deprecated-register)
 endif()
 

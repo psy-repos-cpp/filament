@@ -54,6 +54,12 @@
 #    define UTILS_NORETURN
 #endif
 
+#if __has_attribute(fallthrough)
+#   define UTILS_FALLTHROUGH [[fallthrough]]
+#else
+#   define UTILS_FALLTHROUGH
+#endif
+
 #if __has_attribute(visibility)
 #    ifndef TNT_DEV
 #        define UTILS_PRIVATE __attribute__((visibility("hidden")))
@@ -171,6 +177,14 @@
 #   define UTILS_HAS_FEATURE_CXX_THREAD_LOCAL 1
 #else
 #   define UTILS_HAS_FEATURE_CXX_THREAD_LOCAL 0
+#endif
+
+#if defined(__clang__)
+#define UTILS_NONNULL _Nonnull
+#define UTILS_NULLABLE _Nullable
+#else
+#define UTILS_NONNULL
+#define UTILS_NULLABLE
 #endif
 
 #if defined(_MSC_VER)

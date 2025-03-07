@@ -38,22 +38,28 @@ using namespace utils;
 namespace filament {
 namespace matdbg {
 
-ShaderExtractor::ShaderExtractor(Backend backend, const void* data, size_t size)
+ShaderExtractor::ShaderExtractor(backend::ShaderLanguage target, const void* data, size_t size)
         : mChunkContainer(data, size), mMaterialChunk(mChunkContainer) {
-    switch (backend) {
-        case Backend::OPENGL:
+    switch (target) {
+        case backend::ShaderLanguage::ESSL1:
+            mMaterialTag = ChunkType::MaterialEssl1;
+            mDictionaryTag = ChunkType::DictionaryText;
+            break;
+        case backend::ShaderLanguage::ESSL3:
             mMaterialTag = ChunkType::MaterialGlsl;
             mDictionaryTag = ChunkType::DictionaryText;
             break;
-        case Backend::METAL:
+        case backend::ShaderLanguage::MSL:
             mMaterialTag = ChunkType::MaterialMetal;
             mDictionaryTag = ChunkType::DictionaryText;
             break;
-        case Backend::VULKAN:
+        case backend::ShaderLanguage::METAL_LIBRARY:
+            mMaterialTag = ChunkType::MaterialMetalLibrary;
+            mDictionaryTag = ChunkType::DictionaryMetalLibrary;
+            break;
+        case backend::ShaderLanguage::SPIRV:
             mMaterialTag = ChunkType::MaterialSpirv;
             mDictionaryTag = ChunkType::DictionarySpirv;
-            break;
-        default:
             break;
     }
 }
@@ -82,8 +88,7 @@ bool ShaderExtractor::getShader(ShaderModel shaderModel,
         return false;
     }
 
-    return mMaterialChunk.getShader(shader, blobDictionary,
-            uint8_t(shaderModel), variant, uint8_t(stage));
+    return mMaterialChunk.getShader(shader, blobDictionary, shaderModel, variant, stage);
 }
 
 CString ShaderExtractor::spirvToGLSL(ShaderModel shaderModel, const uint32_t* data,

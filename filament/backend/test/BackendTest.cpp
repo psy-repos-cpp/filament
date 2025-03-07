@@ -33,7 +33,7 @@ static constexpr size_t CONFIG_COMMAND_BUFFERS_SIZE     = 3 * CONFIG_MIN_COMMAND
 using namespace filament;
 using namespace filament::backend;
 
-#ifndef IOS
+#ifndef FILAMENT_IOS
 #include <imageio/ImageEncoder.h>
 #include <image/ColorTransform.h>
 
@@ -51,7 +51,7 @@ void BackendTest::init(Backend backend, bool isMobilePlatform) {
 }
 
 BackendTest::BackendTest() : commandBufferQueue(CONFIG_MIN_COMMAND_BUFFERS_SIZE,
-            CONFIG_COMMAND_BUFFERS_SIZE) {
+        CONFIG_COMMAND_BUFFERS_SIZE, /*mPaused=*/false) {
     initializeDriver();
 }
 
@@ -85,17 +85,17 @@ void BackendTest::executeCommands() {
     }
 }
 
-void BackendTest::flushAndWait(uint64_t timeout) {
-    auto& api = getDriverApi();
-    auto fence = api.createFence();
-    api.finish();
+void BackendTest::flushAndWait() {
+    getDriverApi().finish();
     executeCommands();
-    api.wait(fence, timeout);
-    api.destroyFence(fence);
+    getDriver().purge();
 }
 
 Handle<HwSwapChain> BackendTest::createSwapChain() {
     const NativeView& view = getNativeView();
+    if (!view.ptr) {
+        return getDriverApi().createSwapChainHeadless(view.width, view.height, 0);
+    }
     return getDriverApi().createSwapChain(view.ptr, 0);
 }
 
@@ -112,9 +112,10 @@ void BackendTest::fullViewport(Viewport& viewport) {
 }
 
 void BackendTest::renderTriangle(
-        filament::backend::Handle<filament::backend::HwRenderTarget> renderTarget,
-        filament::backend::Handle<filament::backend::HwSwapChain> swapChain,
-        filament::backend::Handle<filament::backend::HwProgram> program) {
+        PipelineLayout const& pipelineLayout,
+        Handle<filament::backend::HwRenderTarget> renderTarget,
+        Handle<filament::backend::HwSwapChain> swapChain,
+        Handle<filament::backend::HwProgram> program) {
     RenderPassParams params = {};
     fullViewport(params);
     params.flags.clear = TargetBufferFlags::COLOR;
@@ -123,11 +124,15 @@ void BackendTest::renderTriangle(
     params.flags.discardEnd = TargetBufferFlags::NONE;
     params.viewport.height = 512;
     params.viewport.width = 512;
-    renderTriangle(renderTarget, swapChain, program, params);
+    renderTriangle(pipelineLayout, renderTarget, swapChain, program, params);
 }
 
-void BackendTest::renderTriangle(Handle<HwRenderTarget> renderTarget,
-        Handle<HwSwapChain> swapChain, Handle<HwProgram> program, const RenderPassParams& params) {
+void BackendTest::renderTriangle(
+        PipelineLayout const& pipelineLayout,
+        Handle<HwRenderTarget> renderTarget,
+        Handle<HwSwapChain> swapChain,
+        Handle<HwProgram> program,
+        const RenderPassParams& params) {
     auto& api = getDriverApi();
 
     TrianglePrimitive triangle(api);
@@ -138,12 +143,13 @@ void BackendTest::renderTriangle(Handle<HwRenderTarget> renderTarget,
 
     PipelineState state;
     state.program = program;
+    state.pipelineLayout = pipelineLayout;
     state.rasterState.colorWrite = true;
     state.rasterState.depthWrite = false;
     state.rasterState.depthFunc = RasterState::DepthFunc::A;
     state.rasterState.culling = CullingMode::NONE;
 
-    api.draw(state, triangle.getRenderPrimitive(), 1);
+    api.draw(state, triangle.getRenderPrimitive(), 0, 3, 1);
 
     api.endRenderPass();
 }
@@ -171,7 +177,7 @@ void BackendTest::readPixelsAndAssertHash(const char* testName, size_t width, si
 
                 // Export a screenshot, if requested.
                 if (c->exportScreenshot) {
-#ifndef IOS
+#ifndef FILAMENT_IOS
                     LinearImage image(c->width, c->height, 4);
                     image = toLinearWithAlpha<uint8_t>(c->width, c->height, c->width * 4,
                             (uint8_t*) buffer);
@@ -214,66 +220,4 @@ int runTests() {
     return RUN_ALL_TESTS();
 }
 
-void getPixelInfo(PixelDataFormat format, PixelDataType type, size_t& outComponents, int& outBpp) {
-    assert_invariant(type != PixelDataType::COMPRESSED);
-    switch (format) {
-        case PixelDataFormat::UNUSED:
-        case PixelDataFormat::R:
-        case PixelDataFormat::R_INTEGER:
-        case PixelDataFormat::DEPTH_COMPONENT:
-        case PixelDataFormat::ALPHA:
-            outComponents = 1;
-            break;
-        case PixelDataFormat::RG:
-        case PixelDataFormat::RG_INTEGER:
-        case PixelDataFormat::DEPTH_STENCIL:
-            outComponents = 2;
-            break;
-        case PixelDataFormat::RGB:
-        case PixelDataFormat::RGB_INTEGER:
-            outComponents = 3;
-            break;
-        case PixelDataFormat::RGBA:
-        case PixelDataFormat::RGBA_INTEGER:
-            outComponents = 4;
-            break;
-    }
-
-    outBpp = outComponents;
-    switch (type) {
-        case PixelDataType::COMPRESSED: // Impossible -- to squash the IDE warnings
-        case PixelDataType::UBYTE:
-        case PixelDataType::BYTE:
-            // nothing to do
-            break;
-        case PixelDataType::USHORT:
-        case PixelDataType::SHORT:
-        case PixelDataType::HALF:
-            outBpp *= 2;
-            break;
-        case PixelDataType::UINT:
-        case PixelDataType::INT:
-        case PixelDataType::FLOAT:
-            outBpp *= 4;
-            break;
-        case PixelDataType::UINT_10F_11F_11F_REV:
-            // Special case, format must be RGB and uses 4 bytes
-            assert_invariant(format == PixelDataFormat::RGB);
-            outBpp = 4;
-            break;
-        case PixelDataType::UINT_2_10_10_10_REV:
-            // Special case, format must be RGBA and uses 4 bytes
-            assert_invariant(format == PixelDataFormat::RGBA);
-            outBpp = 4;
-            break;
-        case PixelDataType::USHORT_565:
-            // Special case, format must be RGB and uses 2 bytes
-            assert_invariant(format == PixelDataFormat::RGB);
-            outBpp = 2;
-            break;
-    }
-}
-
-
 } // namespace test
-

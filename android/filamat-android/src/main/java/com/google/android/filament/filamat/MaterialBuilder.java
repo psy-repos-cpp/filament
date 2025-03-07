@@ -192,7 +192,8 @@ public class MaterialBuilder {
         OPENGL      (0x1),
         VULKAN      (0x2),
         METAL       (0x4),
-        ALL         (0x7);
+        WEBGPU      (0x8),
+        ALL         (0x15);
 
         final int number;
 
@@ -357,6 +358,12 @@ public class MaterialBuilder {
     @NonNull
     public MaterialBuilder maskThreshold(float threshold) {
         nMaterialBuilderMaskThreshold(mNativeObject, threshold);
+        return this;
+    }
+
+    @NonNull
+    public MaterialBuilder alphaToCoverage(boolean enable) {
+        nMaterialBuilderAlphaToCoverage(mNativeObject, enable);
         return this;
     }
 
@@ -584,6 +591,7 @@ public class MaterialBuilder {
     private static native void nMaterialBuilderDepthCulling(long nativeBuilder, boolean enable);
     private static native void nMaterialBuilderDoubleSided(long nativeBuilder, boolean doubleSided);
     private static native void nMaterialBuilderMaskThreshold(long nativeBuilder, float mode);
+    private static native void nMaterialBuilderAlphaToCoverage(long nativeBuilder, boolean enable);
 
     private static native void nMaterialBuilderShadowMultiplier(long mNativeObject,
             boolean shadowMultiplier);

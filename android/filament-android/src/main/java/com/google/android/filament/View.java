@@ -27,6 +27,8 @@ import static com.google.android.filament.Asserts.assertFloat3In;
 import static com.google.android.filament.Asserts.assertFloat4In;
 import static com.google.android.filament.Colors.LinearColor;
 
+import com.google.android.filament.proguard.UsedByNative;
+
 /**
  * Encompasses all the state needed for rendering a {@link Scene}.
  *
@@ -73,6 +75,7 @@ public class View {
     private AmbientOcclusionOptions mAmbientOcclusionOptions;
     private BloomOptions mBloomOptions;
     private FogOptions mFogOptions;
+    private StereoscopicOptions mStereoscopicOptions;
     private RenderTarget mRenderTarget;
     private BlendMode mBlendMode;
     private DepthOfFieldOptions mDepthOfFieldOptions;
@@ -236,6 +239,15 @@ public class View {
     public void setCamera(@Nullable Camera camera) {
         mCamera = camera;
         nSetCamera(getNativeObject(), camera == null ? 0 : camera.getNativeObject());
+    }
+
+    /**
+     * Query whether a camera is set.
+     * @return true if a camera is set, false otherwise
+     * @see #setCamera
+     */
+    public boolean hasCamera() {
+        return nHasCamera(getNativeObject());
     }
 
     /**
@@ -734,6 +746,33 @@ public class View {
     }
 
     /**
+     * Returns true if transparent picking is enabled.
+     *
+     * @see #setTransparentPickingEnabled
+     */
+    public boolean isTransparentPickingEnabled() {
+        return nIsTransparentPickingEnabled(getNativeObject());
+    }
+
+    /**
+     * Enables or disables transparent picking. Disabled by default.
+     *
+     * When transparent picking is enabled, View::pick() will pick from both
+     * transparent and opaque renderables. When disabled, View::pick() will only
+     * pick from opaque renderables.
+     *
+     * <p>
+     * Transparent picking will create an extra pass for rendering depth
+     * from both transparent and opaque renderables. 
+     * </p>
+     *
+     * @param enabled true enables transparent picking, false disables it.
+     */
+    public void setTransparentPickingEnabled(boolean enabled) {
+        nSetTransparentPickingEnabled(getNativeObject(), enabled);
+    }
+
+    /**
      * Sets options relative to dynamic lighting for this view.
      *
      * <p>
@@ -902,7 +941,7 @@ public class View {
         mBloomOptions = options;
         nSetBloomOptions(getNativeObject(), options.dirt != null ? options.dirt.getNativeObject() : 0,
                 options.dirtStrength, options.strength, options.resolution,
-                options.anamorphism, options.levels, options.blendMode.ordinal(),
+                options.levels, options.blendMode.ordinal(),
                 options.threshold, options.enabled, options.highlight,
                 options.lensFlare, options.starburst, options.chromaticAberration,
                 options.ghostCount, options.ghostSpacing, options.ghostThreshold,
@@ -962,9 +1001,11 @@ public class View {
         assertFloat3In(options.color);
         mFogOptions = options;
         nSetFogOptions(getNativeObject(), options.distance, options.maximumOpacity, options.height,
-                options.heightFalloff, options.color[0], options.color[1], options.color[2],
+                options.heightFalloff, options.cutOffDistance,
+                options.color[0], options.color[1], options.color[2],
                 options.density, options.inScatteringStart, options.inScatteringSize,
                 options.fogColorFromIbl,
+                options.skyColor == null ? 0 : options.skyColor.getNativeObject(),
                 options.enabled);
     }
 
@@ -1028,7 +1069,8 @@ public class View {
      * </p>
      *
      * <p>
-     * Post-processing must be enabled in order to use the stencil buffer.
+     * If post-processing is disabled, then the SwapChain must have the CONFIG_HAS_STENCIL_BUFFER
+     * flag set in order to use the stencil buffer.
      * </p>
      *
      * <p>
@@ -1049,6 +1091,51 @@ public class View {
     public boolean isStencilBufferEnabled() {
         return nIsStencilBufferEnabled(getNativeObject());
     }
+
+    /**
+     * Sets the stereoscopic rendering options for this view.
+     *
+     * <p>
+     * Currently, only one type of stereoscopic rendering is supported: side-by-side.
+     * Side-by-side stereo rendering splits the viewport into two halves: a left and right half.
+     * Eye 0 will render to the left half, while Eye 1 will render into the right half.
+     * </p>
+     *
+     * <p>
+     * Currently, the following features are not supported with stereoscopic rendering:
+     * - post-processing
+     * - shadowing
+     * - punctual lights
+     * </p>
+     *
+     * <p>
+     * Stereo rendering depends on device and platform support. To check if stereo rendering is
+     * supported, use {@link Engine#isStereoSupported()}. If stereo rendering is not supported, then
+     * the stereoscopic options have no effect.
+     * </p>
+     *
+     * @param options The stereoscopic options to use on this view
+     * @see #getStereoscopicOptions
+     */
+    public void setStereoscopicOptions(@NonNull StereoscopicOptions options) {
+        mStereoscopicOptions = options;
+        nSetStereoscopicOptions(getNativeObject(), options.enabled);
+    }
+
+    /**
+     * Gets the stereoscopic options.
+     *
+     * @return options Stereoscopic options currently set.
+     * @see #setStereoscopicOptions
+     */
+    @NonNull
+    public StereoscopicOptions getStereoscopicOptions() {
+        if (mStereoscopicOptions == null) {
+            mStereoscopicOptions = new StereoscopicOptions();
+        }
+        return mStereoscopicOptions;
+    }
+
 
     /**
      * A class containing the result of a picking query
@@ -1094,10 +1181,29 @@ public class View {
         nPick(getNativeObject(), x, y, handler, internalCallback);
     }
 
+    @UsedByNative("View.cpp")
     private static class InternalOnPickCallback implements Runnable {
+        private final OnPickCallback mUserCallback;
+        private final PickingQueryResult mPickingQueryResult = new PickingQueryResult();
+
+        @UsedByNative("View.cpp")
+        @Entity
+        int mRenderable;
+
+        @UsedByNative("View.cpp")
+        float mDepth;
+
+        @UsedByNative("View.cpp")
+        float mFragCoordsX;
+        @UsedByNative("View.cpp")
+        float mFragCoordsY;
+        @UsedByNative("View.cpp")
+        float mFragCoordsZ;
+
         public InternalOnPickCallback(OnPickCallback mUserCallback) {
             this.mUserCallback = mUserCallback;
         }
+
         @Override
         public void run() {
             mPickingQueryResult.renderable = mRenderable;
@@ -1107,13 +1213,63 @@ public class View {
             mPickingQueryResult.fragCoords[2] = mFragCoordsZ;
             mUserCallback.onPick(mPickingQueryResult);
         }
-        private final OnPickCallback mUserCallback;
-        private final PickingQueryResult mPickingQueryResult = new PickingQueryResult();
-        @Entity int mRenderable;
-        float mDepth;
-        float mFragCoordsX;
-        float mFragCoordsY;
-        float mFragCoordsZ;
+    }
+
+    /**
+     * Set the value of material global variables. There are up-to four such variable each of
+     * type float4. These variables can be read in a user Material with
+     * `getMaterialGlobal{0|1|2|3}()`. All variable start with a default value of { 0, 0, 0, 1 }
+     *
+     * @param index index of the variable to set between 0 and 3.
+     * @param value new value for the variable.
+     * @see #getMaterialGlobal
+     */
+    public void setMaterialGlobal(int index, @NonNull @Size(min = 4) float[] value) {
+        Asserts.assertFloat4In(value);
+        nSetMaterialGlobal(getNativeObject(), index, value[0], value[1], value[2], value[3]);
+    }
+
+    /**
+     * Get the value of the material global variables.
+     * All variable start with a default value of { 0, 0, 0, 1 }
+     *
+     * @param index index of the variable to set between 0 and 3.
+     * @param out A 4-float array where the value will be stored, or null in which case the array is
+     *            allocated.
+     * @return A 4-float array containing the current value of the variable.
+     * @see #setMaterialGlobal
+     */
+    @NonNull @Size(min = 4)
+    public float[] getMaterialGlobal(int index, @Nullable @Size(min = 4) float[] out) {
+        out = Asserts.assertFloat4(out);
+        nGetMaterialGlobal(getNativeObject(), index, out);
+        return out;
+    }
+
+    /**
+     * Get an Entity representing the large scale fog object.
+     * This entity is always inherited by the View's Scene.
+     *
+     * It is for example possible to create a TransformManager component with this
+     * Entity and apply a transformation globally on the fog.
+     *
+     * @return an Entity representing the large scale fog object.
+     */
+    @Entity
+    public int getFogEntity() {
+        return nGetFogEntity(getNativeObject());
+    }
+
+    /**
+     * When certain temporal features are used (e.g.: TAA or Screen-space reflections), the view
+     * keeps a history of previous frame renders associated with the Renderer the view was last
+     * used with. When switching Renderer, it may be necessary to clear that history by calling
+     * this method. Similarly, if the whole content of the screen change, like when a cut-scene
+     * starts, clearing the history might be needed to avoid artifacts due to the previous frame
+     * being very different.
+     */
+    public void clearFrameHistory(Engine engine) {
+        nClearFrameHistory(getNativeObject(), engine.getNativeObject());
     }
 
     public long getNativeObject() {
@@ -1130,6 +1286,7 @@ public class View {
     private static native void nSetName(long nativeView, String name);
     private static native void nSetScene(long nativeView, long nativeScene);
     private static native void nSetCamera(long nativeView, long nativeCamera);
+    private static native boolean nHasCamera(long nativeView);
     private static native void nSetViewport(long nativeView, int left, int bottom, int width, int height);
     private static native void nSetVisibleLayers(long nativeView, int select, int value);
     private static native void nSetShadowingEnabled(long nativeView, boolean enabled);
@@ -1151,13 +1308,16 @@ public class View {
     private static native boolean nIsPostProcessingEnabled(long nativeView);
     private static native void nSetFrontFaceWindingInverted(long nativeView, boolean inverted);
     private static native boolean nIsFrontFaceWindingInverted(long nativeView);
+    private static native void nSetTransparentPickingEnabled(long nativeView, boolean enabled);
+    private static native boolean nIsTransparentPickingEnabled(long nativeView);
     private static native void nSetAmbientOcclusion(long nativeView, int ordinal);
     private static native int nGetAmbientOcclusion(long nativeView);
     private static native void nSetAmbientOcclusionOptions(long nativeView, float radius, float bias, float power, float resolution, float intensity, float bilateralThreshold, int quality, int lowPassFilter, int upsampling, boolean enabled, boolean bentNormals, float minHorizonAngleRad);
     private static native void nSetSSCTOptions(long nativeView, float ssctLightConeRad, float ssctStartTraceDistance, float ssctContactDistanceMax, float ssctIntensity, float v, float v1, float v2, float ssctDepthBias, float ssctDepthSlopeBias, int ssctSampleCount, int ssctRayCount, boolean ssctEnabled);
-    private static native void nSetBloomOptions(long nativeView, long dirtNativeObject, float dirtStrength, float strength, int resolution, float anamorphism, int levels, int blendMode, boolean threshold, boolean enabled, float highlight,
+    private static native void nSetBloomOptions(long nativeView, long dirtNativeObject, float dirtStrength, float strength, int resolution, int levels, int blendMode, boolean threshold, boolean enabled, float highlight,
             boolean lensFlare, boolean starburst, float chromaticAberration, int ghostCount, float ghostSpacing, float ghostThreshold, float haloThickness, float haloRadius, float haloThreshold);
-    private static native void nSetFogOptions(long nativeView, float distance, float maximumOpacity, float height, float heightFalloff, float v, float v1, float v2, float density, float inScatteringStart, float inScatteringSize, boolean fogColorFromIbl, boolean enabled);
+    private static native void nSetFogOptions(long nativeView, float distance, float maximumOpacity, float height, float heightFalloff, float cutOffDistance, float v, float v1, float v2, float density, float inScatteringStart, float inScatteringSize, boolean fogColorFromIbl, long skyColorNativeObject, boolean enabled);
+    private static native void nSetStereoscopicOptions(long nativeView, boolean enabled);
     private static native void nSetBlendMode(long nativeView, int blendMode);
     private static native void nSetDepthOfFieldOptions(long nativeView, float cocScale, float maxApertureDiameter, boolean enabled, int filter,
             boolean nativeResolution, int foregroundRingCount, int backgroundRingCount, int fastGatherRingCount, int maxForegroundCOC, int maxBackgroundCOC);
@@ -1172,6 +1332,10 @@ public class View {
     private static native void nPick(long nativeView, int x, int y, Object handler, InternalOnPickCallback internalCallback);
     private static native void nSetStencilBufferEnabled(long nativeView, boolean enabled);
     private static native boolean nIsStencilBufferEnabled(long nativeView);
+    private static native void nSetMaterialGlobal(long nativeView, int index, float x, float y, float z, float w);
+    private static native void nGetMaterialGlobal(long nativeView, int index, float[] out);
+    private static native int nGetFogEntity(long nativeView);
+    private static native void nClearFrameHistory(long nativeView, long nativeEngine);
 
     /**
      * List of available ambient occlusion techniques.
@@ -1256,10 +1420,10 @@ public class View {
         /**
          * Upscaling quality
          * LOW:    bilinear filtered blit. Fastest, poor quality
-         * MEDIUM: AMD FidelityFX FSR1 w/ mobile optimizations
+         * MEDIUM: Qualcomm Snapdragon Game Super Resolution (SGSR) 1.0
          * HIGH:   AMD FidelityFX FSR1 w/ mobile optimizations
          * ULTRA:  AMD FidelityFX FSR1
-         *      FSR1 require a well anti-aliased (MSAA or TAA), noise free scene.
+         *      FSR1 and SGSR require a well anti-aliased (MSAA or TAA), noise free scene. Avoid FXAA and dithering.
          *
          * The default upscaling quality is set to LOW.
          */
@@ -1287,8 +1451,6 @@ public class View {
      *
      * blendMode:   Whether the bloom effect is purely additive (false) or mixed with the original
      *              image (true).
-     *
-     * anamorphism: Bloom's aspect ratio (x/y), for artistic purposes.
      *
      * threshold:   When enabled, a threshold at 1.0 is applied on the source image, this is
      *              useful for artistic reasons and is usually needed when a dirt texture is used.
@@ -1327,13 +1489,9 @@ public class View {
         /**
          * resolution of vertical axis (2^levels to 2048)
          */
-        public int resolution = 360;
+        public int resolution = 384;
         /**
-         * bloom x/y aspect-ratio (1/32 to 32)
-         */
-        public float anamorphism = 1.0f;
-        /**
-         * number of blur levels (3 to 11)
+         * number of blur levels (1 to 11)
          */
         public int levels = 6;
         /**
@@ -1353,6 +1511,17 @@ public class View {
          * limit highlights to this value before bloom [10, +inf]
          */
         public float highlight = 1000.0f;
+        /**
+         * Bloom quality level.
+         * LOW (default): use a more optimized down-sampling filter, however there can be artifacts
+         *      with dynamic resolution, this can be alleviated by using the homogenous mode.
+         * MEDIUM: Good balance between quality and performance.
+         * HIGH: In this mode the bloom resolution is automatically increased to avoid artifacts.
+         *      This mode can be significantly slower on mobile, especially at high resolution.
+         *      This mode greatly improves the anamorphic bloom.
+         */
+        @NonNull
+        public QualityLevel quality = QualityLevel.LOW;
         /**
          * enable screen-space lens flare
          */
@@ -1392,48 +1561,109 @@ public class View {
     }
 
     /**
-     * Options to control fog in the scene
+     * Options to control large-scale fog in the scene
      */
     public static class FogOptions {
         /**
-         * distance in world units from the camera where the fog starts ( >= 0.0 )
+         * Distance in world units [m] from the camera to where the fog starts ( >= 0.0 )
          */
         public float distance = 0.0f;
+        /**
+         * Distance in world units [m] after which the fog calculation is disabled.
+         * This can be used to exclude the skybox, which is desirable if it already contains clouds or
+         * fog. The default value is +infinity which applies the fog to everything.
+         *
+         * Note: The SkyBox is typically at a distance of 1e19 in world space (depending on the near
+         * plane distance and projection used though).
+         */
+        public float cutOffDistance = Float.POSITIVE_INFINITY;
         /**
          * fog's maximum opacity between 0 and 1
          */
         public float maximumOpacity = 1.0f;
         /**
-         * fog's floor in world units
+         * Fog's floor in world units [m]. This sets the "sea level".
          */
         public float height = 0.0f;
         /**
-         * how fast fog dissipates with altitude
+         * How fast the fog dissipates with altitude. heightFalloff has a unit of [1/m].
+         * It can be expressed as 1/H, where H is the altitude change in world units [m] that causes a
+         * factor 2.78 (e) change in fog density.
+         *
+         * A falloff of 0 means the fog density is constant everywhere and may result is slightly
+         * faster computations.
          */
         public float heightFalloff = 1.0f;
         /**
-         * fog's color (linear), see fogColorFromIbl
+         *  Fog's color is used for ambient light in-scattering, a good value is
+         *  to use the average of the ambient light, possibly tinted towards blue
+         *  for outdoors environments. Color component's values should be between 0 and 1, values
+         *  above one are allowed but could create a non energy-conservative fog (this is dependant
+         *  on the IBL's intensity as well).
+         *
+         *  We assume that our fog has no absorption and therefore all the light it scatters out
+         *  becomes ambient light in-scattering and has lost all directionality, i.e.: scattering is
+         *  isotropic. This somewhat simulates Rayleigh scattering.
+         *
+         *  This value is used as a tint instead, when fogColorFromIbl is enabled.
+         *
+         *  @see fogColorFromIbl
          */
         @NonNull @Size(min = 3)
-        public float[] color = {0.5f, 0.5f, 0.5f};
+        public float[] color = {1.0f, 1.0f, 1.0f};
         /**
-         * fog's density at altitude given by 'height'
+         * Extinction factor in [1/m] at altitude 'height'. The extinction factor controls how much
+         * light is absorbed and out-scattered per unit of distance. Each unit of extinction reduces
+         * the incoming light to 37% of its original value.
+         *
+         * Note: The extinction factor is related to the fog density, it's usually some constant K times
+         * the density at sea level (more specifically at fog height). The constant K depends on
+         * the composition of the fog/atmosphere.
+         *
+         * For historical reason this parameter is called `density`.
          */
         public float density = 0.1f;
         /**
-         * distance in world units from the camera where in-scattering starts
+         * Distance in world units [m] from the camera where the Sun in-scattering starts.
          */
         public float inScatteringStart = 0.0f;
         /**
-         * size of in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
+         * Very inaccurately simulates the Sun's in-scattering. That is, the light from the sun that
+         * is scattered (by the fog) towards the camera.
+         * Size of the Sun in-scattering (>0 to activate). Good values are >> 1 (e.g. ~10 - 100).
+         * Smaller values result is a larger scattering size.
          */
         public float inScatteringSize = -1.0f;
         /**
-         * Fog color will be modulated by the IBL color in the view direction.
+         * The fog color will be sampled from the IBL in the view direction and tinted by `color`.
+         * Depending on the scene this can produce very convincing results.
+         *
+         * This simulates a more anisotropic phase-function.
+         *
+         * `fogColorFromIbl` is ignored when skyTexture is specified.
+         *
+         * @see skyColor
          */
         public boolean fogColorFromIbl = false;
         /**
-         * enable or disable fog
+         * skyTexture must be a mipmapped cubemap. When provided, the fog color will be sampled from
+         * this texture, higher resolution mip levels will be used for objects at the far clip plane,
+         * and lower resolution mip levels for objects closer to the camera. The skyTexture should
+         * typically be heavily blurred; a typical way to produce this texture is to blur the base
+         * level with a strong gaussian filter or even an irradiance filter and then generate mip
+         * levels as usual. How blurred the base level is somewhat of an artistic decision.
+         *
+         * This simulates a more anisotropic phase-function.
+         *
+         * `fogColorFromIbl` is ignored when skyTexture is specified.
+         *
+         * @see Texture
+         * @see fogColorFromIbl
+         */
+        @Nullable
+        public Texture skyColor = null;
+        /**
+         * Enable or disable large-scale fog
          */
         public boolean enabled = false;
     }
@@ -1458,6 +1688,10 @@ public class View {
          * circle of confusion scale factor (amount of blur)
          */
         public float cocScale = 1.0f;
+        /**
+         * width/height aspect ratio of the circle of confusion (simulate anamorphic lenses)
+         */
+        public float cocAspectRatio = 1.0f;
         /**
          * maximum aperture diameter in meters (zero to disable rotation)
          */
@@ -1673,7 +1907,7 @@ public class View {
     }
 
     /**
-     * Options for Temporal Multi-Sample Anti-aliasing (MSAA)
+     * Options for Multi-Sample Anti-aliasing (MSAA)
      * @see setMultiSampleAntiAliasingOptions()
      */
     public static class MultiSampleAntiAliasingOptions {
@@ -1697,21 +1931,111 @@ public class View {
 
     /**
      * Options for Temporal Anti-aliasing (TAA)
+     * Most TAA parameters are extremely costly to change, as they will trigger the TAA post-process
+     * shaders to be recompiled. These options should be changed or set during initialization.
+     * `filterWidth`, `feedback` and `jitterPattern`, however, can be changed at any time.
+     *
+     * `feedback` of 0.1 effectively accumulates a maximum of 19 samples in steady state.
+     * see "A Survey of Temporal Antialiasing Techniques" by Lei Yang and all for more information.
+     *
      * @see setTemporalAntiAliasingOptions()
      */
     public static class TemporalAntiAliasingOptions {
+        public enum BoxType {
+            /**
+             * use an AABB neighborhood
+             */
+            AABB,
+            /**
+             * use the variance of the neighborhood (not recommended)
+             */
+            VARIANCE,
+            /**
+             * use both AABB and variance
+             */
+            AABB_VARIANCE,
+        }
+
+        public enum BoxClipping {
+            /**
+             * Accurate box clipping
+             */
+            ACCURATE,
+            /**
+             * clamping
+             */
+            CLAMP,
+            /**
+             * no rejections (use for debugging)
+             */
+            NONE,
+        }
+
+        public enum JitterPattern {
+            RGSS_X4,
+            UNIFORM_HELIX_X4,
+            HALTON_23_X8,
+            HALTON_23_X16,
+            HALTON_23_X32,
+        }
+
         /**
-         * reconstruction filter width typically between 0 (sharper, aliased) and 1 (smoother)
+         * reconstruction filter width typically between 0.2 (sharper, aliased) and 1.5 (smoother)
          */
         public float filterWidth = 1.0f;
         /**
          * history feedback, between 0 (maximum temporal AA) and 1 (no temporal AA).
          */
-        public float feedback = 0.04f;
+        public float feedback = 0.12f;
+        /**
+         * texturing lod bias (typically -1 or -2)
+         */
+        public float lodBias = -1.0f;
+        /**
+         * post-TAA sharpen, especially useful when upscaling is true.
+         */
+        public float sharpness = 0.0f;
         /**
          * enables or disables temporal anti-aliasing
          */
         public boolean enabled = false;
+        /**
+         * 4x TAA upscaling. Disables Dynamic Resolution. [BETA]
+         */
+        public boolean upscaling = false;
+        /**
+         * whether to filter the history buffer
+         */
+        public boolean filterHistory = true;
+        /**
+         * whether to apply the reconstruction filter to the input
+         */
+        public boolean filterInput = true;
+        /**
+         * whether to use the YcoCg color-space for history rejection
+         */
+        public boolean useYCoCg = false;
+        /**
+         * type of color gamut box
+         */
+        @NonNull
+        public TemporalAntiAliasingOptions.BoxType boxType = TemporalAntiAliasingOptions.BoxType.AABB;
+        /**
+         * clipping algorithm
+         */
+        @NonNull
+        public TemporalAntiAliasingOptions.BoxClipping boxClipping = TemporalAntiAliasingOptions.BoxClipping.ACCURATE;
+        @NonNull
+        public TemporalAntiAliasingOptions.JitterPattern jitterPattern = TemporalAntiAliasingOptions.JitterPattern.HALTON_23_X16;
+        public float varianceGamma = 1.0f;
+        /**
+         * adjust the feedback dynamically to reduce flickering
+         */
+        public boolean preventFlickering = false;
+        /**
+         * whether to apply history reprojection (debug option)
+         */
+        public boolean historyReprojection = true;
     }
 
     /**
@@ -1798,6 +2122,7 @@ public class View {
          * PCF with soft shadows and contact hardening
          */
         PCSS,
+        PCFd,
     }
 
     /**
@@ -1859,5 +2184,12 @@ public class View {
          * Acceptable values are equal to or greater than 1.
          */
         public float penumbraRatioScale = 1.0f;
+    }
+
+    /**
+     * Options for stereoscopic (multi-eye) rendering.
+     */
+    public static class StereoscopicOptions {
+        public boolean enabled = false;
     }
 }

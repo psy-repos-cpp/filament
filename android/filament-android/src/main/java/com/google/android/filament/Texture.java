@@ -654,6 +654,19 @@ public class Texture {
     }
 
     /**
+     * Checks whether a given texture format is supported for mipmapping in this {@link Engine}.
+     * This depends on the selected backend.
+     *
+     * @param engine {@link Engine} to test the {@link InternalFormat InternalFormat} against
+     * @param format format to check
+     * @return <code>true</code> if this format is supported for texturing.
+     */
+    public static boolean isTextureFormatMipmappable(@NonNull Engine engine,
+            @NonNull InternalFormat format) {
+        return nIsTextureFormatMipmappable(engine.getNativeObject(), format.ordinal());
+    }
+
+    /**
      * Checks whether texture swizzling is supported in this {@link Engine}.
      * This depends on the selected backend.
      *
@@ -662,6 +675,20 @@ public class Texture {
      */
     public static boolean isTextureSwizzleSupported(@NonNull Engine engine) {
         return nIsTextureSwizzleSupported(engine.getNativeObject());
+    }
+
+    /**
+     * Checks whether a given combination of texture format, pixel data and type is valid.
+     *
+     * @param internalFormat texture format
+     * @param pixelDataFormat pixel data format
+     * @param pixelDataType pixel data type
+     * @return <code>true</code> if the combination is valid
+     */
+    public static boolean validatePixelFormatAndType(@NonNull InternalFormat internalFormat,
+            @NonNull Format pixelDataFormat, @NonNull Type pixelDataType) {
+        return nValidatePixelFormatAndType(internalFormat.ordinal(), pixelDataFormat.ordinal(),
+                pixelDataType.ordinal());
     }
 
     /**
@@ -801,6 +828,19 @@ public class Texture {
         }
 
         /**
+         * Creates an external texture. The content must be set using setExternalImage().
+         * The sampler can be SAMPLER_EXTERNAL or SAMPLER_2D depending on the format. Generally
+         * YUV formats must use SAMPLER_EXTERNAL. This depends on the backend features and is not
+         * validated.
+         * @return This Builder, for chaining calls.
+         */
+        @NonNull
+        public Builder external() {
+            nBuilderExternal(mNativeBuilder);
+            return this;
+        }
+
+        /**
          * Creates a new <code>Texture</code> instance.
          * @param engine The {@link Engine} to associate this <code>Texture</code> with.
          * @return A newly created <code>Texture</code>
@@ -849,6 +889,10 @@ public class Texture {
         public static final int SAMPLEABLE = 0x10;
         /** Texture can be used as a subpass input */
         public static final int SUBPASS_INPUT = 0x20;
+        /** Texture can be used the source of a blit() */
+        public static final int BLIT_SRC = 0x40;
+        /** Texture can be used the destination of a blit() */
+        public static final int BLIT_DST = 0x80;
         /** by default textures are <code>UPLOADABLE</code> and <code>SAMPLEABLE</code>*/
         public static final int DEFAULT = UPLOADABLE | SAMPLEABLE;
     }
@@ -1243,7 +1287,11 @@ public class Texture {
     }
 
     private static native boolean nIsTextureFormatSupported(long nativeEngine, int internalFormat);
+    private static native boolean nIsTextureFormatMipmappable(long nativeEngine, int internalFormat);
     private static native boolean nIsTextureSwizzleSupported(long nativeEngine);
+
+    private static native boolean nValidatePixelFormatAndType(int internalFormat, int pixelDataFormat,
+            int pixelDataType);
 
     private static native long nCreateBuilder();
     private static native void nDestroyBuilder(long nativeBuilder);
@@ -1257,6 +1305,7 @@ public class Texture {
     private static native void nBuilderUsage(long nativeBuilder, int flags);
     private static native void nBuilderSwizzle(long nativeBuilder, int r, int g, int b, int a);
     private static native void nBuilderImportTexture(long nativeBuilder, long id);
+    private static native void nBuilderExternal(long nativeBuilder);
     private static native long nBuilderBuild(long nativeBuilder, long nativeEngine);
 
     private static native int nGetWidth(long nativeTexture, int level);

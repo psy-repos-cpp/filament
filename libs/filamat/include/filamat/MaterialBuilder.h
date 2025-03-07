@@ -39,6 +39,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <variant>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -79,7 +80,8 @@ public:
         OPENGL      = 0x01u,
         VULKAN      = 0x02u,
         METAL       = 0x04u,
-        ALL         = OPENGL | VULKAN | METAL
+        WEBGPU        = 0x08u,
+        ALL         = OPENGL | VULKAN | METAL | WEBGPU
     };
 
     /*
@@ -126,28 +128,24 @@ public:
 
 protected:
     // Looks at platform and target API, then decides on shader models and output formats.
-    void prepare(bool vulkanSemantics);
+    void prepare(bool vulkanSemantics, filament::backend::FeatureLevel featureLevel);
 
     using ShaderModel = filament::backend::ShaderModel;
     Platform mPlatform = Platform::DESKTOP;
     TargetApi mTargetApi = (TargetApi) 0;
     Optimization mOptimization = Optimization::PERFORMANCE;
     bool mPrintShaders = false;
+    bool mSaveRawVariants = false;
     bool mGenerateDebugInfo = false;
+    bool mIncludeEssl1 = true;
     utils::bitset32 mShaderModels;
     struct CodeGenParams {
         ShaderModel shaderModel;
         TargetApi targetApi;
         TargetLanguage targetLanguage;
+        filament::backend::FeatureLevel featureLevel;
     };
     std::vector<CodeGenParams> mCodeGenPermutations;
-    // For finding properties and running semantic analysis, we always use the same code gen
-    // permutation. This is the first permutation generated with default arguments passed to matc.
-    static constexpr const CodeGenParams mSemanticCodeGenParams = {
-            .shaderModel = ShaderModel::MOBILE,
-            .targetApi = TargetApi::OPENGL,
-            .targetLanguage = TargetLanguage::SPIRV
-    };
 
     // Keeps track of how many times MaterialBuilder::init() has been called without a call to
     // MaterialBuilder::shutdown(). Internally, glslang does something similar. We keep track for
@@ -166,6 +164,7 @@ inline constexpr MaterialBuilderBase::TargetApi targetApiFromBackend(
         case Backend::OPENGL:  return TargetApi::OPENGL;
         case Backend::VULKAN:  return TargetApi::VULKAN;
         case Backend::METAL:   return TargetApi::METAL;
+        case Backend::WEBGPU:    return TargetApi::WEBGPU;
         case Backend::NOOP:    return TargetApi::OPENGL;
     }
 }
@@ -231,19 +230,25 @@ public:
 
     using ShaderQuality = filament::ShaderQuality;
     using BlendingMode = filament::BlendingMode;
+    using BlendFunction = filament::backend::BlendFunction;
     using Shading = filament::Shading;
     using Interpolation = filament::Interpolation;
     using VertexDomain = filament::VertexDomain;
     using TransparencyMode = filament::TransparencyMode;
     using SpecularAmbientOcclusion = filament::SpecularAmbientOcclusion;
 
+    using AttributeType = filament::backend::UniformType;
     using UniformType = filament::backend::UniformType;
+    using ConstantType = filament::backend::ConstantType;
     using SamplerType = filament::backend::SamplerType;
     using SubpassType = filament::backend::SubpassType;
     using SamplerFormat = filament::backend::SamplerFormat;
     using ParameterPrecision = filament::backend::Precision;
+    using Precision = filament::backend::Precision;
     using CullingMode = filament::backend::CullingMode;
     using FeatureLevel = filament::backend::FeatureLevel;
+    using StereoscopicType = filament::backend::StereoscopicType;
+    using ShaderStage = filament::backend::ShaderStage;
 
     enum class VariableQualifier : uint8_t {
         OUT
@@ -270,6 +275,12 @@ public:
     };
     using PreprocessorDefineList = std::vector<PreprocessorDefine>;
 
+
+    MaterialBuilder& noSamplerValidation(bool enabled) noexcept;
+
+    //! Enable generation of ESSL 1.0 code in FL0 materials.
+    MaterialBuilder& includeEssl1(bool enabled) noexcept;
+
     //! Set the name of this material.
     MaterialBuilder& name(const char* name) noexcept;
 
@@ -290,6 +301,15 @@ public:
     MaterialBuilder& parameter(const char* name, size_t size, UniformType type,
             ParameterPrecision precision = ParameterPrecision::DEFAULT) noexcept;
 
+    //! Add a constant parameter to this material.
+    template<typename T>
+    using is_supported_constant_parameter_t = typename std::enable_if<
+            std::is_same<int32_t, T>::value ||
+            std::is_same<float, T>::value ||
+            std::is_same<bool, T>::value>::type;
+    template<typename T, typename = is_supported_constant_parameter_t<T>>
+    MaterialBuilder& constant(const char *name, ConstantType type, T defaultValue = 0);
+
     /**
      * Add a sampler parameter to this material.
      *
@@ -297,17 +317,17 @@ public:
      */
     MaterialBuilder& parameter(const char* name, SamplerType samplerType,
             SamplerFormat format = SamplerFormat::FLOAT,
-            ParameterPrecision precision = ParameterPrecision::DEFAULT) noexcept;
-
-    /// @copydoc parameter(SamplerType, SamplerFormat, ParameterPrecision, const char*)
-    MaterialBuilder& parameter(const char* name, SamplerType samplerType,
-            ParameterPrecision precision) noexcept;
-
+            ParameterPrecision precision = ParameterPrecision::DEFAULT,
+            bool multisample = false,
+            const char* transformName = "") noexcept;
 
     MaterialBuilder& buffer(filament::BufferInterfaceBlock bib) noexcept;
 
     //! Custom variables (all float4).
     MaterialBuilder& variable(Variable v, const char* name) noexcept;
+
+    MaterialBuilder& variable(Variable v, const char* name,
+            ParameterPrecision precision) noexcept;
 
     /**
      * Require a specified attribute.
@@ -390,13 +410,26 @@ public:
 
     MaterialBuilder& featureLevel(FeatureLevel featureLevel) noexcept;
 
-    //! Set the blending mode for this material.
+    /**
+     * Set the blending mode for this material. When set to MASKED, alpha to coverage is turned on.
+     * You can override this behavior using alphaToCoverage(false).
+     */
     MaterialBuilder& blending(BlendingMode blending) noexcept;
+
+    /**
+     * Set the blend function  for this material. blending must be et to CUSTOM.
+     */
+    MaterialBuilder& customBlendFunctions(
+            BlendFunction srcRGB,
+            BlendFunction srcA,
+            BlendFunction dstRGB,
+            BlendFunction dstA) noexcept;
 
     /**
      * Set the blending mode of the post-lighting color for this material.
      * Only OPAQUE, TRANSPARENT and ADD are supported, the default is TRANSPARENT.
-     * This setting requires the material property "postLightingColor" to be set.
+     * This setting requires the material properties "postLightingColor" and
+     * "postLightingMixFactor" to be set.
      */
     MaterialBuilder& postLightingBlending(BlendingMode blending) noexcept;
 
@@ -435,6 +468,14 @@ public:
      * @ref filament::MaterialInstance::setMaskThreshold "MaterialInstance::setMaskThreshold".
      */
     MaterialBuilder& maskThreshold(float threshold) noexcept;
+
+    /**
+     * Enables or disables alpha-to-coverage. When enabled, the coverage of a fragment is based
+     * on its alpha value. This parameter is only useful when MSAA is in use. Alpha to coverage
+     * is enabled automatically when the blend mode is set to MASKED; this behavior can be
+     * overridden by calling alphaToCoverage(false).
+     */
+    MaterialBuilder& alphaToCoverage(bool enable) noexcept;
 
     //! The material output is multiplied by the shadowing factor (UNLIT model only).
     MaterialBuilder& shadowMultiplier(bool shadowMultiplier) noexcept;
@@ -500,6 +541,12 @@ public:
     //! Specifies how transparent objects should be rendered (default is DEFAULT).
     MaterialBuilder& transparencyMode(TransparencyMode mode) noexcept;
 
+    //! Specify the stereoscopic type (default is INSTANCED)
+    MaterialBuilder& stereoscopicType(StereoscopicType stereoscopicType) noexcept;
+
+    //! Specify the number of eyes for stereoscopic rendering
+    MaterialBuilder& stereoscopicEyeCount(uint8_t eyeCount) noexcept;
+
     /**
      * Enable / disable custom surface shading. Custom surface shading requires the LIT
      * shading model. In addition, the following function must be defined in the fragment
@@ -541,10 +588,17 @@ public:
      */
     MaterialBuilder& optimization(Optimization optimization) noexcept;
 
-    // TODO: this is present here for matc's "--print" flag, but ideally does not belong inside
-    // MaterialBuilder.
+    // TODO: this is present here for matc's "--print" flag, but ideally does not belong inside MaterialBuilder.
     //! If true, will output the generated GLSL shader code to stdout.
     MaterialBuilder& printShaders(bool printShaders) noexcept;
+
+    /**
+     * If true, this will write the raw generated GLSL for each variant to a text file in the
+     * current directory. The file will be named after the material name and the variant name. Its
+     * extension will be derived from the shader stage. For example, mymaterial_0x0e.frag,
+     * mymaterial_0x18.vert, etc.
+     */
+    MaterialBuilder& saveRawVariants(bool saveVariants) noexcept;
 
     //! If true, will include debugging information in generated SPIRV.
     MaterialBuilder& generateDebugInfo(bool generateDebugInfo) noexcept;
@@ -556,7 +610,7 @@ public:
     MaterialBuilder& shaderDefine(const char* name, const char* value) noexcept;
 
     //! Add a new fragment shader output variable. Only valid for materials in the POST_PROCESS domain.
-    MaterialBuilder& output(VariableQualifier qualifier, OutputTarget target,
+    MaterialBuilder& output(VariableQualifier qualifier, OutputTarget target, Precision precision,
             OutputType type, const char* name, int location = -1) noexcept;
 
     MaterialBuilder& enableFramebufferFetch() noexcept;
@@ -597,8 +651,8 @@ public:
         Parameter() noexcept: parameterType(INVALID) {}
 
         // Sampler
-        Parameter(const char* paramName, SamplerType t, SamplerFormat f, ParameterPrecision p)
-                : name(paramName), size(1), precision(p), samplerType(t), format(f), parameterType(SAMPLER) { }
+        Parameter(const char* paramName, SamplerType t, SamplerFormat f, ParameterPrecision p, bool ms, const char* tn)
+                : name(paramName), size(1), precision(p), samplerType(t), format(f), parameterType(SAMPLER), multisample(ms), transformName(tn) { }
 
         // Uniform
         Parameter(const char* paramName, UniformType t, size_t typeSize, ParameterPrecision p)
@@ -615,6 +669,8 @@ public:
         SamplerType samplerType;
         SubpassType subpassType;
         SamplerFormat format;
+        bool multisample;
+        utils::CString transformName;
         enum {
             INVALID,
             UNIFORM,
@@ -630,37 +686,60 @@ public:
     struct Output {
         Output() noexcept = default;
         Output(const char* outputName, VariableQualifier qualifier, OutputTarget target,
-                OutputType type, int location) noexcept
-                : name(outputName), qualifier(qualifier), target(target), type(type),
-                  location(location) { }
+                Precision precision, OutputType type, int location) noexcept
+                : name(outputName), qualifier(qualifier), target(target), precision(precision),
+                  type(type), location(location) { }
 
         utils::CString name;
         VariableQualifier qualifier;
         OutputTarget target;
+        Precision precision;
         OutputType type;
         int location;
+    };
+
+    struct Constant {
+        utils::CString name;
+        ConstantType type;
+        union {
+            int32_t i;
+            float f;
+            bool b;
+        } defaultValue;
+    };
+
+    struct PushConstant {
+        utils::CString name;
+        ConstantType type;
+        ShaderStage stage;
+    };
+
+    struct CustomVariable {
+        utils::CString name;
+        Precision precision = Precision::DEFAULT;
+        bool hasPrecision = false;
     };
 
     static constexpr size_t MATERIAL_PROPERTIES_COUNT = filament::MATERIAL_PROPERTIES_COUNT;
     using Property = filament::Property;
 
     using PropertyList = bool[MATERIAL_PROPERTIES_COUNT];
-    using VariableList = utils::CString[MATERIAL_VARIABLES_COUNT];
+    using VariableList = CustomVariable[MATERIAL_VARIABLES_COUNT];
     using OutputList = std::vector<Output>;
 
     static constexpr size_t MAX_COLOR_OUTPUT = filament::backend::MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT;
     static constexpr size_t MAX_DEPTH_OUTPUT = 1;
     static_assert(MAX_COLOR_OUTPUT == 8,
             "When updating MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT, manually update post_process_inputs.fs"
-            " and post_process.fs");
+            " and post_process_main.fs");
 
     // Preview the first shader generated by the given CodeGenParams.
     // This is used to run Static Code Analysis before generating a package.
     std::string peek(filament::backend::ShaderStage type,
             const CodeGenParams& params, const PropertyList& properties) noexcept;
 
-    // Returns true if any of the parameter samplers is of type samplerExternal
-    bool hasExternalSampler() const noexcept;
+    // Returns true if any of the parameter samplers matches the specified type.
+    bool hasSamplerType(SamplerType samplerType) const noexcept;
 
     static constexpr size_t MAX_PARAMETERS_COUNT = 48;
     static constexpr size_t MAX_SUBPASS_COUNT = 1;
@@ -668,6 +747,8 @@ public:
     using ParameterList = Parameter[MAX_PARAMETERS_COUNT];
     using SubpassList = Parameter[MAX_SUBPASS_COUNT];
     using BufferList = std::vector<std::unique_ptr<filament::BufferInterfaceBlock>>;
+    using ConstantList = std::vector<Constant>;
+    using PushConstantList = std::vector<PushConstant>;
 
     // returns the number of parameters declared in this material
     uint8_t getParameterCount() const noexcept { return mParameterCount; }
@@ -683,22 +764,51 @@ public:
 
     filament::UserVariantFilterMask getVariantFilter() const { return mVariantFilter; }
 
+    FeatureLevel getFeatureLevel() const noexcept { return mFeatureLevel; }
     /// @endcond
 
+    struct Attribute {
+        std::string_view name;
+        AttributeType type;
+        MaterialBuilder::VertexAttribute location;
+        std::string getAttributeName() const noexcept {
+            return "mesh_" + std::string{ name };
+        }
+        std::string getDefineName() const noexcept {
+            std::string uppercase{ name };
+            transform(uppercase.cbegin(), uppercase.cend(), uppercase.begin(), ::toupper);
+            return "HAS_ATTRIBUTE_" + uppercase;
+        }
+    };
+
+    using AttributeDatabase = std::array<Attribute, filament::backend::MAX_VERTEX_ATTRIBUTE_COUNT>;
+
+    static inline AttributeDatabase const& getAttributeDatabase() noexcept {
+        return sAttributeDatabase;
+    }
+
 private:
+    static const AttributeDatabase sAttributeDatabase;
+
     void prepareToBuild(MaterialInfo& info) noexcept;
+
+    // Initialize internal push constants that will both be written to the shaders and material
+    // chunks (like user-defined spec constants).
+    void initPushConstants() noexcept;
 
     // Return true if the shader is syntactically and semantically valid.
     // This method finds all the properties defined in the fragment and
     // vertex shaders of the material.
-    bool findAllProperties() noexcept;
+    bool findAllProperties(CodeGenParams const& semanticCodeGenParams) noexcept;
 
     // Multiple calls to findProperties accumulate the property sets across fragment
     // and vertex shaders in mProperties.
     bool findProperties(filament::backend::ShaderStage type,
-            MaterialBuilder::PropertyList& p) noexcept;
+            MaterialBuilder::PropertyList& allProperties,
+            CodeGenParams const& semanticCodeGenParams) noexcept;
 
-    bool runSemanticAnalysis(MaterialInfo const& info) noexcept;
+    bool runSemanticAnalysis(MaterialInfo* inOutInfo,
+            CodeGenParams const& semanticCodeGenParams) noexcept;
 
     bool checkLiteRequirements() noexcept;
 
@@ -751,6 +861,8 @@ private:
 
     PropertyList mProperties;
     ParameterList mParameters;
+    ConstantList mConstants;
+    PushConstantList mPushConstants;
     SubpassList mSubpasses;
     VariableList mVariables;
     OutputList mOutputs;
@@ -760,6 +872,7 @@ private:
     FeatureLevel mFeatureLevel = FeatureLevel::FEATURE_LEVEL_1;
     BlendingMode mBlendingMode = BlendingMode::OPAQUE;
     BlendingMode mPostLightingBlendingMode = BlendingMode::TRANSPARENT;
+    std::array<BlendFunction, 4> mCustomBlendFunctions = {};
     CullingMode mCullingMode = CullingMode::BACK;
     Shading mShading = Shading::LIT;
     MaterialDomain mMaterialDomain = MaterialDomain::SURFACE;
@@ -769,6 +882,8 @@ private:
     Interpolation mInterpolation = Interpolation::SMOOTH;
     VertexDomain mVertexDomain = VertexDomain::OBJECT;
     TransparencyMode mTransparencyMode = TransparencyMode::DEFAULT;
+    StereoscopicType mStereoscopicType = StereoscopicType::INSTANCED;
+    uint8_t mStereoscopicEyeCount = 2;
 
     filament::AttributeBitset mRequiredAttributes;
 
@@ -791,6 +906,8 @@ private:
     bool mInstanced = false;
     bool mDepthWrite = true;
     bool mDepthWriteSet = false;
+    bool mAlphaToCoverage = false;
+    bool mAlphaToCoverageSet = false;
 
     bool mSpecularAntiAliasing = false;
     bool mClearCoatIorChange = true;
@@ -814,6 +931,8 @@ private:
     PreprocessorDefineList mDefines;
 
     filament::UserVariantFilterMask mVariantFilter = {};
+
+    bool mNoSamplerValidation = false;
 };
 
 } // namespace filamat

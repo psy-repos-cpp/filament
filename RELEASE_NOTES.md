@@ -7,6 +7,396 @@ A new header is inserted each time a *tag* is created.
 Instead, if you are authoring a PR for the main branch, add your release note to
 [NEW_RELEASE_NOTES.md](./NEW_RELEASE_NOTES.md).
 
+## v1.57.3
+
+- android: breaking changes to API KTX1Loader::createIndirectLight and KTX1Loader::createSkybox
+
+## v1.57.2
+
+- Support including PlatformMetal.h in C++ files.
+
+## v1.57.1
+
+
+## v1.57.0
+
+- matdbg: Add support for debugging ESSL 1.0 shaders
+- backend: New platform API to better handle external textures [⚠️ **New Material Version**]
+
+## v1.56.8
+
+
+## v1.56.7
+
+
+## v1.56.6
+
+fix crash: the 'target_node' of Animation Channel may be nullpointer.
+
+## v1.56.5
+
+
+## v1.56.4
+
+
+## v1.56.3
+
+
+## v1.56.2
+
+- vk: fix stage pool gc logic
+
+## v1.56.1
+
+## v1.56.0
+
+- backend: descriptor layouts distinguish samplers and external samplers (b/376089915) [⚠️ **New Material Version**]
+
+## v1.55.1
+
+
+## v1.55.0
+- Add descriptor sets to describe shader resources. [⚠️ **New Material Version**]
+
+## v1.54.5
+
+
+## v1.54.4
+
+- Add support for multi-layered render target with array textures.
+
+## v1.54.3
+
+
+## v1.54.2
+
+- Add a `name` API to Filament objects for debugging handle use-after-free assertions
+
+## v1.54.1
+
+
+## v1.54.0
+
+- materials: add a new `stereoscopicType` material parameter. [⚠️ **New Material Version**]
+- Fix a crash when compiling shaders on IMG devices
+
+## v1.53.5
+
+- engine: Fix bug causing certain sampler parameters to not be applied correctly in GLES 2.0 and on
+  certain GLES 3.0 drivers.
+
+## v1.53.4
+
+
+## v1.53.3
+
+- Add drag and drop support for IBL files for desktop gltf_viewer.
+
+## v1.53.2
+
+
+## v1.53.1
+
+
+## v1.53.0
+
+- engine: fix skinning normals with large transforms (b/342459864) [⚠️ **New Material Version**]
+
+## v1.52.3
+
+
+## v1.52.2
+
+
+## v1.52.1
+
+- Add instructions for using Mesa for software rasterization
+
+## v1.51.9
+
+
+## v1.51.8
+
+- filagui: Fix regression which broke WebGL
+- Add a new Engine::Config setting to control preferred shader language
+- Add `getEyeIndex` vertex API
+- ios: Remove bitcode from iOS builds
+
+## v1.51.7
+
+- Add new matedit tool
+- filagui: Support rendering `GL_TEXTURE_EXTERNAL_OES` textures.
+- `setFrameScheduledCallback` now takes a `utils::Invocable`.
+- engine: Add `isPaused()`
+
+## v1.51.6
+
+- Add new matedit tool
+- filagui: Support rendering `GL_TEXTURE_EXTERNAL_OES` textures.
+
+## v1.51.5
+
+
+## v1.51.4
+
+
+## v1.51.3
+
+
+## v1.51.2
+
+- engine: Add experimental APIs `Engine::builder::paused()` and `Engine::setPaused()`
+
+## v1.51.1
+
+
+## v1.51.0
+
+- materials: add support for post-lighting mix factor (b/328498606) [⚠️ **New Material Version**]
+
+## v1.50.6
+
+- Add new API `SwapChain::getFrameScheduledCallback`
+- vulkan: fixed validation error VUID-vkAcquireNextImageKHR-semaphore-01779
+- opengl: Add support for protected content swapchains and contexts
+
+## v1.50.5
+
+- android: NDK 26.1.10909125 is used by default
+- android: Minimum API level on Android is now API 21 instead of API 19. This allows the use of OpenGL ES 3.1
+- rendering: New PBR Neutral tone mapper, designed to preserve materials color appearance
+- android: Change default frameRateOptions.interval to 1.0
+
+## v1.50.4
+
+
+## v1.50.3
+
+
+## v1.50.2
+
+
+## v1.50.1
+
+- Metal: fix some shader artifacts by disabling fast math optimizations.
+- backend: remove `atan2` overload which had a typo and wasn't useful. Fixes b/320856413.
+- utils: remove usages of `SpinLock`. Fixes b/321101014.
+
+## v1.50.0
+- engine: TAA now supports 4x upscaling [BETA] [⚠️ **New Material Version**]
+
+## v1.49.3
+
+- matc: Generate stereo variants for FL0 materials [⚠️ **Recompile materials**]
+
+## v1.49.2
+
+
+## v1.49.1
+
+
+## v1.49.0
+
+- matc: Fix ESSL 1.0 codegen when using external samplers [⚠️ **Recompile materials**]
+
+## v1.48.0
+
+- matc: New option `-1` to disable generation of ESSL 1.0 code in Feature Level 0 materials
+- matc: Support optimizations for ESSL 1.0 code [⚠️ **Recompile materials**]
+
+## v1.47.0
+
+- engine: Support up to 4 side-by-side stereoscopic eyes, configurable at Engine creation time. See
+  `Engine::Config::stereoscopicEyeCount`. [⚠️ **Recompile Materials**]
+
+## v1.46.0
+
+- engine: Allow instantiating Engine at a given feature level via `Engine::Builder::featureLevel`
+- matc: Enable `GL_OES_standard_derivatives` extension in ESSL 1.0 shaders
+- matc: Fix code generation of double sided and masked materials in ESSL 1.0 shaders
+- filagui: Add support for feature level 0
+- matc: Add support for post-process materials in feature level 0
+- engine: Add `Material::getFeatureLevel()`
+- engine: Add missing `Material::getReflectionMode()` method in Java
+- engine: Support basic usage of post-processing materials on feature level 0
+- engine: Fix critical GLES 2.0 bugs
+- engine: Add `FILAMENT_ENABLE_FEATURE_LEVEL_0` build-time option optionally allow building Filament
+  without FL0 support.
+
+## v1.45.1
+
+- engine: Added parameter for configuring JobSystem thread count
+- engine: In Java, introduce Engine.Builder
+- gltfio: fix ubershader index for transmission&volume material
+- engine: New tone mapper: `AgXTonemapper`.
+- matinfo: Add support for viewing ESSL 1.0 shaders
+- engine: Add `Renderer::getClearOptions()` [b/243846268]
+- engine: Fix stable shadows (again) when an IBL rotation is used
+
+## v1.45.0
+
+- materials: fix alpha masked materials when MSAA is turned on [⚠️ **Recompile materials**]
+- materials: better support materials with custom depth [**Recompile Materials**]
+- engine: fade shadows at shadowFar distance instead of hard cutoff [⚠️ **New Material Version**]
+
+## v1.44.0
+
+- engine: add support for skinning with more than four bones per vertex.
+- engine: remove `BloomOptions::anamorphism` which wasn't working well in most cases [**API CHANGE**]
+- engine: new API to return a Material's supported variants, C++ only (b/297456590)
+- build: fix emscripten-1.3.46 build
+- engine: materials built for feature level 0 can now also be loaded in higher feature levels [⚠️
+  **New Material Version**]
+
+## v1.43.1
+
+## v1.43.0
+
+- gltfio: Fix possible change of scale sign when decomposing transform matrix for animation
+- engine: Fixes "stable" shadows (see b/299310624)
+
+## v1.42.2
+
+- Fix possible NPE when updating fog options from Java/Kotlin
+- The `emissive` property was not applied properly to `MASKED` materials, and could cause
+  dark fringes to appear (recompile materials)
+- Allow glTF materials with transmission/volume extensions to choose their alpha mode
+  instead of forcing `MASKED`
+- Fix a crash in gltfio when not using ubershaders
+- Use flatmat for mat parameter in jsbinding
+- Fix TextureFlags for sheenRoughnessMap when textures of sheenRoughnessMap and sheenColorMap is same
+- Directional shadows can now be transformed (b/297095805)
+
+## v1.42.1
+
+- Fix potential `EXC_BAD_ACCESS` with Metal backend: b/297059776
+- `setFrameCompletedCallback` now takes a `backend::CallbackHandler`.
+
+## v1.42.0
+
+- engine: add preliminary support for instanced stereoscopic rendering [⚠️ **Recompile materials**]
+
+## v1.41.0
+
+- backend: fix #6997 : picking can fail on Adreno [⚠️ **New Material Version**]
+- backend: A partial workaround for PowerVR devices (#5118, b/190221124) [⚠️ **Recompile Materials**]
+
+## v1.40.5
+
+- backend: Disable timer queries on all Mali GPUs (fixes b/233754398)
+- engine: Add a way to query the validity of most filament objects (see `Engine::isValid`)
+- opengl: fix b/290388359 : possible crash when shutting down the engine
+- engine: Improve precision of frame time measurement when using emulated TimerQueries
+- backend: Improve frame pacing on Android and Vulkan.
+- backend: workaround b/291140208 (gltf_viewer crashes on Nexus 6P)
+- engine: support `setDepthFunc` for `MaterialInstance`
+- web: Added setDepthFunc()/getDepthFunc() to MaterialInstance
+- android: Added setDepthFunc()/getDepthFunc() to MaterialInstance
+
+## v1.40.4
+
+- gltfio: fix crash when compute morph target without material
+- matc: fix buggy `variant-filter` flag
+- web: Added missing setMat3Parameter()/setMat4Parameter() to MaterialInstance
+- opengl: fix b/290670707 : crash when using the blob cache
+- engine: fix a crash with `Material::compile()` when a callback is specified
+
+## v1.40.3
+
+## v1.40.2
+
+- rendering: dynamic resolution would not work with a translucent render target and quality > low
+- Java/Kotlin: user callbacks were not invoked on successful texture upload
+
+## v1.40.1
+
+## v1.40.0
+
+- matc: fix VSM high precision option on mobile [⚠️ **Recompile materials**]
+- vulkan: support sRGB swap chain
+- Add new `getMaxAutomaticInstances()` API on `Engine` to get max supported automatic instances.
+- UiHelper: fix jank when a `TextureView` is resized (fixes b\282220665)
+- backend: parallel shader compilation support. This breaks and improves the recent `Material::compile` API.
+
+## v1.39.0
+
+- matc: workaround a bug in spirv-tools causing vsm to fail [⚠️ **Recompile materials**]
+
+## v1.38.0
+
+- engine: a new feature to set a transform on the global-scale fog  [⚠️ **Recompile materials**]
+- engine: large-scale fog can now be opted-out on a per-renderable basis
+- engine: improve froxelizer resource efficiency [⚠️ **Recompile materials**]
+- matc: better accounting and validation of used samplers in user materials
+- engine: add support for sampling fog color from a custom texture [⚠️ **Recompile materials**]
+- vulkan: introduce new custom swapchain API
+- vulkan: new context sharing API
+
+## v1.37.0
+
+- backend: added `Platform` blob cache APIs, typically used to cache programs [⚠️ **Recompile materials**]
+
+## v1.36.0
+
+- engine: a local transform can now be supplied for each GPU instance [⚠️ **Recompile materials**]
+- everything: Add limited support for OpenGL ES 2.0 devices. [⚠️ **Recompile Materials**]
+- platform: New virtual on `OpenGLPlatform` to preserve ancillary buffers
+
+## v1.35.0
+
+- materials: Materials can now access up to 4 global `vec4` visible by all materials [⚠️ **Recompile Materials**]
+
+## v1.34.0
+
+- materials: picking is done in float (prepare for ES2) [⚠️ **New Material Version**]
+- materials: postLightingBlending is now applied before the fog [⚠️ **Recompile materials**]
+- vulkan: fix adreno optimized material artifacts [⚠️ **Recompile Materials**]
+
+## v1.33.0
+
+- materials: prepare ES2 support [⚠️ **New Material Version**]
+
+## v1.32.4
+
+- engine: Add support for _constant parameters_, which are constants that can be specialized after material compilation.
+- materials: improved size reduction of OpenGL/Metal shaders by ~65% when compiling materials with
+             size optimizations (`matc -S`) [⚠️ **Recompile Materials**]
+- engine: fix potential crash on Metal devices with A8X GPU (iPad Air 2) [⚠️ **Recompile Materials**]
+- opengl: support the external image on macOS
+
+## v1.32.3
+
+- fog: added an option to disable the fog after a certain distance [⚠️ **Recompile Materials**].
+- fog: fog color now takes exposure and IBL intensity into account [⚠️ **Recompile Materials**].
+- materials: implement cascades debugging as a post-process [⚠️ **Recompile Materials**].
+- materials: use 9 digits or less for floats [⚠️ **Recompile Materials**].
+- gltfio: fix skinning when objects are far from the origin
+- materials: remove 4 unneeded variants from `unlit` materials [⚠️ **Recompile Materials**].
+
+## v1.32.2
+
+- lighting: the sun disc was computed in low/medium quality instead of high quality. This will
+  provide performance improvements to mobile devices [⚠️ **Recompile Materials**]
+
+## v1.32.1
+
+## v1.32.0
+
+- fog: fixed fog height falloff and computation precision on mobile [⚠️ **Recompile Materials**]
+- materials: new alphaToCoverage property can be used to control alpha to coverage behavior
+- materials: added `getUserWorldFromWorldMatrix()` and `getUserWorldPosition()` to retrieve the
+  API-level (user) world position in materials. Deprecated `getWorldOffset()`. [⚠️ **Recompile
+  Materials**]
+- engine: fix precision issue with `shading_view` in large scenes
+- vulkan: readPixels is now async (#6560)
+
+## v1.31.7
+
+## v1.31.6
+
+- engine: the default render channel is now 2 instead of 0
+- gltfio: Fix crash when a MIME type has no texture provider
+
 ## v1.31.5
 
 - gltfio: fix potential early freeing of data provided with `ResourceLoader::addResourceData`.
@@ -309,7 +699,7 @@ Instead, if you are authoring a PR for the main branch, add your release note to
 
 - engine: Binary size improvements.
 - engine: Add basic support for instanced renderables [**NEW API**].
-- engine: Fix, first imaged passsed to `Stream::SetAcquiredImage` is ignored and leaked.
+- engine: Fix, first imaged passed to `Stream::SetAcquiredImage` is ignored and leaked.
 - Vulkan: Robustness improvements.
 - Java: Fix, lookAt z axis negated.
 - gltfio: Be graceful when model has > 4 weights per vert.

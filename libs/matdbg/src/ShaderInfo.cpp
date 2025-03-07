@@ -16,6 +16,8 @@
 
 #include <matdbg/ShaderInfo.h>
 
+#include "CommonWriter.h"
+
 #include <filaflat/ChunkContainer.h>
 #include <filaflat/DictionaryReader.h>
 #include <filaflat/MaterialChunk.h>
@@ -48,12 +50,17 @@ size_t getShaderCount(const ChunkContainer& container, ChunkType type) {
     return shaderCount;
 }
 
-bool getMetalShaderInfo(const ChunkContainer& container, ShaderInfo* info) {
-    if (!container.hasChunk(ChunkType::MaterialMetal)) {
+bool getShaderInfo(const ChunkContainer& container, ShaderInfo* info, ChunkType chunkType) {
+    if (!container.hasChunk(chunkType)) {
         return true;
     }
 
-    auto [start, end] = container.getChunkRange(ChunkType::MaterialMetal);
+    MaterialDomain domain;
+    if (!read(container, ChunkType::MaterialDomain, reinterpret_cast<uint8_t*>(&domain))) {
+        return false;
+    }
+
+    auto [start, end] = container.getChunkRange(chunkType);
     Unflattener unflattener(start, end);
 
     uint64_t shaderCount = 0;
@@ -83,102 +90,17 @@ bool getMetalShaderInfo(const ChunkContainer& container, ShaderInfo* info) {
             return false;
         }
 
-        *info++ = {
-                .shaderModel = ShaderModel(shaderModelValue),
-                .variant = variant,
-                .pipelineStage = ShaderStage(pipelineStageValue),
-                .offset = offsetValue
-        };
-    }
-
-    return true;
-}
-
-bool getGlShaderInfo(const ChunkContainer& container, ShaderInfo* info) {
-    if (!container.hasChunk(ChunkType::MaterialGlsl)) {
-        return true;
-    }
-
-    auto [start, end] = container.getChunkRange(ChunkType::MaterialGlsl);
-    Unflattener unflattener(start, end);
-
-    uint64_t shaderCount;
-    if (!unflattener.read(&shaderCount) || shaderCount == 0) {
-        return false;
-    }
-
-    for (uint64_t i = 0; i < shaderCount; i++) {
-        uint8_t shaderModelValue;
-        Variant variant;
-        uint8_t pipelineStageValue;
-        uint32_t offsetValue;
-
-        if (!unflattener.read(&shaderModelValue)) {
-            return false;
+        auto stage = ShaderStage(pipelineStageValue);
+        if (domain == MaterialDomain::SURFACE) {
+            variant = stage == ShaderStage::VERTEX ?
+                    Variant::filterVariantVertex(variant) :
+                    Variant::filterVariantFragment(variant);
         }
-
-        if (!unflattener.read(&variant)) {
-            return false;
-        }
-
-        if (!unflattener.read(&pipelineStageValue)) {
-            return false;
-        }
-
-        if (!unflattener.read(&offsetValue)) {
-            return false;
-        }
-
         *info++ = {
             .shaderModel = ShaderModel(shaderModelValue),
             .variant = variant,
             .pipelineStage = ShaderStage(pipelineStageValue),
             .offset = offsetValue
-        };
-    }
-    return true;
-}
-
-bool getVkShaderInfo(const ChunkContainer& container, ShaderInfo* info) {
-    if (!container.hasChunk(ChunkType::MaterialSpirv)) {
-        return true;
-    }
-
-    auto [start, end] = container.getChunkRange(ChunkType::MaterialSpirv);
-    Unflattener unflattener(start, end);
-
-    uint64_t shaderCount;
-    if (!unflattener.read(&shaderCount) || shaderCount == 0) {
-        return false;
-    }
-
-    for (uint64_t i = 0; i < shaderCount; i++) {
-        uint8_t shaderModelValue;
-        Variant variant;
-        uint8_t pipelineStageValue;
-        uint32_t dictionaryIndex;
-
-        if (!unflattener.read(&shaderModelValue)) {
-            return false;
-        }
-
-        if (!unflattener.read(&variant)) {
-            return false;
-        }
-
-        if (!unflattener.read(&pipelineStageValue)) {
-            return false;
-        }
-
-        if (!unflattener.read(&dictionaryIndex)) {
-            return false;
-        }
-
-        *info++ = {
-            .shaderModel = ShaderModel(shaderModelValue),
-            .variant = variant,
-            .pipelineStage = ShaderStage(pipelineStageValue),
-            .offset = dictionaryIndex
         };
     }
     return true;

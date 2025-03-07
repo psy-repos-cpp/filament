@@ -69,6 +69,15 @@ std::ostream& operator<<(std::ostream& out, const AmbientOcclusionOptions& in);
 int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, MultiSampleAntiAliasingOptions* out);
 std::ostream& operator<<(std::ostream& out, const MultiSampleAntiAliasingOptions& in);
 
+int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, TemporalAntiAliasingOptions::BoxType* out);
+std::ostream& operator<<(std::ostream& out, TemporalAntiAliasingOptions::BoxType in);
+
+int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, TemporalAntiAliasingOptions::BoxClipping* out);
+std::ostream& operator<<(std::ostream& out, TemporalAntiAliasingOptions::BoxClipping in);
+
+int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, TemporalAntiAliasingOptions::JitterPattern* out);
+std::ostream& operator<<(std::ostream& out, TemporalAntiAliasingOptions::JitterPattern in);
+
 int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, TemporalAntiAliasingOptions* out);
 std::ostream& operator<<(std::ostream& out, const TemporalAntiAliasingOptions& in);
 
@@ -92,5 +101,8 @@ std::ostream& operator<<(std::ostream& out, const VsmShadowOptions& in);
 
 int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, SoftShadowOptions* out);
 std::ostream& operator<<(std::ostream& out, const SoftShadowOptions& in);
+
+int parse(jsmntok_t const* tokens, int i, const char* jsonChunk, StereoscopicOptions* out);
+std::ostream& operator<<(std::ostream& out, const StereoscopicOptions& in);
 
 } // namespace filament::viewer

@@ -1,4 +1,28 @@
 //------------------------------------------------------------------------------
+// Common Helpers
+//------------------------------------------------------------------------------
+
+/**
+ * Index of the eye being rendered, starting at 0.
+ * @public-api
+ */
+int getEyeIndex() {
+#if defined(VARIANT_HAS_STEREO) && defined(FILAMENT_STEREO_INSTANCED)
+    return instance_index % CONFIG_STEREO_EYE_COUNT;
+#elif defined(VARIANT_HAS_STEREO) && defined(FILAMENT_STEREO_MULTIVIEW)
+
+#   if defined(TARGET_VULKAN_ENVIRONMENT)
+    return int(gl_ViewIndex);
+#   else
+    // gl_ViewID_OVR is of uint type, which needs an explicit conversion.
+    return int(gl_ViewID_OVR);
+#   endif // TARGET_VULKAN_ENVIRONMENT
+
+#endif
+    return 0;
+}
+
+//------------------------------------------------------------------------------
 // Uniforms access
 //------------------------------------------------------------------------------
 
@@ -24,12 +48,17 @@ highp mat4 getViewFromClipMatrix() {
 
 /** @public-api */
 highp mat4 getClipFromWorldMatrix() {
-    return frameUniforms.clipFromWorldMatrix;
+    return frameUniforms.clipFromWorldMatrix[getEyeIndex()];
 }
 
 /** @public-api */
 highp mat4 getWorldFromClipMatrix() {
     return frameUniforms.worldFromClipMatrix;
+}
+
+/** @public-api */
+highp mat4 getUserWorldFromWorldMatrix() {
+    return frameUniforms.userWorldFromWorldMatrix;
 }
 
 /** @public-api */
@@ -70,10 +99,6 @@ highp vec2 uvToRenderTargetUV(const highp vec2 uv) {
 
 // TODO: below shouldn't be accessible from post-process materials
 
-#define FILAMENT_OBJECT_SKINNING_ENABLED_BIT   0x100u
-#define FILAMENT_OBJECT_MORPHING_ENABLED_BIT   0x200u
-#define FILAMENT_OBJECT_CONTACT_SHADOWS_BIT    0x400u
-
 /** @public-api */
 highp vec4 getResolution() {
     return frameUniforms.resolution;
@@ -81,12 +106,12 @@ highp vec4 getResolution() {
 
 /** @public-api */
 highp vec3 getWorldCameraPosition() {
-    return frameUniforms.cameraPosition;
+    return frameUniforms.worldFromViewMatrix[3].xyz;
 }
 
-/** @public-api */
+/** @public-api, @deprecated use getUserWorldPosition() or getUserWorldFromWorldMatrix() instead  */
 highp vec3 getWorldOffset() {
-    return frameUniforms.worldOffset;
+    return getUserWorldFromWorldMatrix()[3].xyz;
 }
 
 /** @public-api */
@@ -99,4 +124,24 @@ float getExposure() {
 /** @public-api */
 float getEV100() {
     return frameUniforms.ev100;
+}
+
+//------------------------------------------------------------------------------
+// user defined globals
+//------------------------------------------------------------------------------
+
+highp vec4 getMaterialGlobal0() {
+    return frameUniforms.custom[0];
+}
+
+highp vec4 getMaterialGlobal1() {
+    return frameUniforms.custom[1];
+}
+
+highp vec4 getMaterialGlobal2() {
+    return frameUniforms.custom[2];
+}
+
+highp vec4 getMaterialGlobal3() {
+    return frameUniforms.custom[3];
 }
